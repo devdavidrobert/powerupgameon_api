@@ -2,13 +2,21 @@ const RaffleModel = require("../models/Raffle");
 const SubmissionModel = require("../models/Submission");
 const { asyncHandler } = require("../utils/asyncHandler");
 const { fisherYatesShuffle, toISOString } = require("../utils/helpers");
+const { serializeDocData } = require("../utils/serializeFirestore");
 
 /**
  * GET /api/raffles
  */
 const getAllRaffles = asyncHandler(async (req, res) => {
   const raffles = await RaffleModel.findAllRaffles();
-  res.json({ success: true, data: raffles });
+
+  // Serialize Dates to ISO strings so the REST client gets JSON-safe values.
+  const data = raffles.map((r) => ({
+    ...r,
+    createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt ?? null,
+  }));
+
+  res.json({ success: true, data });
 });
 
 /**
@@ -19,7 +27,14 @@ const getRaffleWinners = asyncHandler(async (req, res) => {
   if (!raffle) return res.status(404).json({ success: false, message: "Raffle not found." });
 
   const winners = await RaffleModel.findWinnersByRaffle(req.params.raffleId);
-  res.json({ success: true, data: winners });
+
+  // Serialize Dates to ISO strings.
+  const data = winners.map((w) => ({
+    ...w,
+    selectedAt: w.selectedAt instanceof Date ? w.selectedAt.toISOString() : w.selectedAt ?? null,
+  }));
+
+  res.json({ success: true, data });
 });
 
 /**
@@ -78,7 +93,23 @@ const createRaffle = asyncHandler(async (req, res) => {
 
   const result = await RaffleModel.createRaffleWithWinners({ name: raffleName, winners });
 
-  res.status(201).json({ success: true, data: result });
+  // Serialize dates before sending.
+  const responseData = {
+    raffle: {
+      ...result.raffle,
+      createdAt:
+        result.raffle.createdAt instanceof Date
+          ? result.raffle.createdAt.toISOString()
+          : result.raffle.createdAt ?? null,
+    },
+    winners: result.winners.map((w) => ({
+      ...w,
+      selectedAt:
+        w.selectedAt instanceof Date ? w.selectedAt.toISOString() : w.selectedAt ?? null,
+    })),
+  };
+
+  res.status(201).json({ success: true, data: responseData });
 });
 
 /**

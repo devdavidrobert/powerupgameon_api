@@ -305,87 +305,76 @@ const SubmissionModel = {
   },
 
   /**
-   * @param {string} id
+   * Delete a single submission and its directly associated registration record.
+   *
+   * SECURITY: The previous implementation deleted ALL records sharing the same
+   * IP address. This caused legitimate players on shared networks (NAT, university
+   * WiFi, hotel networks) to be wiped when an admin removed one bad actor.
+   *
+   * This version deletes only:
+   *   1. The submission document itself
+   *   2. The registration document for the same sessionId
+   *   3. The name-lock document derived from the registration's normalizedName
+   *   4. The session document
+   *   5. The prize aggregate decrement (if a real prize was awarded)
+   *
+   * IP-based cleanup should be a separate, explicit admin action if ever needed.
+   *
+   * @param {string} id  sessionId / submission document ID
    * @returns {Promise<void>}
    */
   async delete(id) {
     const PrizeModel = require("./Prize");
     const db = getDb();
+
+    // Load the submission so we know the prize for aggregate decrement.
     const sub = await this.findById(id);
-    const statsRef = AGGREGATES_DOC();
 
-    const submissionIdsToDelete = new Set([id]);
-    let regSnap = null;
+    // Load the matching registration document (same ID as sessionId).
+    const regSnap = await db.collection("registrations").doc(id).get();
+    const regData = regSnap.exists ? regSnap.data() : null;
 
-    if (sub) {
-      regSnap = await db.collection("registrations").doc(id).get();
-      if (regSnap.exists) {
-        const regData = regSnap.data();
-        if (regData?.ip && regData.ip !== "unknown") {
-          const ipSnap = await db.collection("registrations").where("ip", "==", regData.ip).get();
-          ipSnap.forEach((d) => {
-            if (d.id !== id) submissionIdsToDelete.add(d.id);
-          });
-        }
-      }
+    // Determine prize decrement BEFORE the batch delete.
+    let decrementPrize = null;
+    if (sub && sub.prize && sub.prize !== "pending" && sub.prize !== "Nothing") {
+      const prizeRows = await PrizeModel.findAll();
+      const isReal = prizeRows.some((p) => p.name === sub.prize && p.isRealPrize);
+      if (isReal) decrementPrize = sub.prize;
     }
 
     const batch = db.batch();
 
-    const prizeRows = await PrizeModel.findAll();
-    const realPrizeByName = new Map(
-      prizeRows.filter((p) => p.isRealPrize).map((p) => [p.name, true])
-    );
+    // 1. Delete the submission.
+    batch.delete(db.collection(COLLECTION).doc(id));
 
-    const subRefs = [...submissionIdsToDelete].map((sid) => db.collection(COLLECTION).doc(sid));
-    const subSnaps = subRefs.length ? await db.getAll(...subRefs) : [];
+    // 2. Delete the session document.
+    batch.delete(db.collection(SESSIONS_COLLECTION).doc(id));
 
-    const decrementByPrize = {};
-    for (const snap of subSnaps) {
-      if (!snap.exists) continue;
-      const { prize } = snap.data();
-      if (!prize || prize === "pending" || prize === "Nothing") continue;
-      if (!realPrizeByName.has(prize)) continue;
-      decrementByPrize[prize] = (decrementByPrize[prize] || 0) + 1;
-    }
-
-    for (const sid of submissionIdsToDelete) {
-      batch.delete(db.collection(COLLECTION).doc(sid));
-    }
-
-    if (sub && regSnap?.exists) {
-      const regData = regSnap.data();
+    // 3. Delete the registration document.
+    if (regSnap.exists) {
       batch.delete(regSnap.ref);
 
+      // 4. Delete the name-lock record so the player's name is freed.
       if (regData?.normalizedName) {
-        batch.delete(db.collection("registrations").doc(`name_${regData.normalizedName}`));
-      }
-
-      if (regData?.ip && regData.ip !== "unknown") {
-        const ipSnap = await db.collection("registrations").where("ip", "==", regData.ip).get();
-
-        ipSnap.forEach((d) => {
-          if (d.id !== id) {
-            batch.delete(d.ref);
-            if (d.data()?.normalizedName) {
-              batch.delete(db.collection("registrations").doc(`name_${d.data().normalizedName}`));
-            }
-          }
-        });
+        batch.delete(
+          db.collection("registrations").doc(`name_${regData.normalizedName}`)
+        );
       }
     }
 
-    if (Object.keys(decrementByPrize).length) {
+    // 5. Decrement prize aggregate if a real prize was awarded.
+    if (decrementPrize) {
+      const statsRef = AGGREGATES_DOC();
       const statsSnap = await statsRef.get();
       const prev = statsSnap.exists ? statsSnap.data().prizeAwardCounts || {} : {};
       const next = { ...prev };
-      const now = new Date();
-      for (const [prizeName, n] of Object.entries(decrementByPrize)) {
-        const v = Math.max(0, (next[prizeName] || 0) - n);
-        if (v === 0) delete next[prizeName];
-        else next[prizeName] = v;
+      const current = next[decrementPrize] || 0;
+      if (current <= 1) {
+        delete next[decrementPrize];
+      } else {
+        next[decrementPrize] = current - 1;
       }
-      batch.set(statsRef, { prizeAwardCounts: next, updatedAt: now }, { merge: true });
+      batch.set(statsRef, { prizeAwardCounts: next, updatedAt: new Date() }, { merge: true });
     }
 
     await batch.commit();

@@ -48,7 +48,16 @@ const getSubmission = asyncHandler(async (req, res) => {
 
 /**
  * POST /api/submissions
+ *
  * Prize is never taken from the client — derived server-side from validated answers.
+ *
+ * SECURITY: The spin token is only included in the response when the player
+ * achieves a perfect score. The token is a short-lived (20 min), single-use
+ * HMAC-signed value. The sessionId embedded in the token is verified server-side
+ * in POST /api/spin before any prize is awarded.
+ *
+ * Answer enumeration mitigation: validation errors return a generic 400 without
+ * revealing which specific index was out of range (only logged server-side).
  */
 const createSubmission = asyncHandler(async (req, res) => {
   const { sessionId, fullName, normalizedName, answers, userAgent } = req.body;
@@ -84,7 +93,8 @@ const createSubmission = asyncHandler(async (req, res) => {
     if (!Number.isInteger(n)) {
       return res.status(400).json({
         success: false,
-        message: `Answer at index ${i} must be an integer.`,
+        // Generic message — don't reveal which index failed to prevent enumeration.
+        message: "One or more answers are invalid.",
       });
     }
     sanitizedAnswers.push(n);
@@ -115,6 +125,8 @@ const createSubmission = asyncHandler(async (req, res) => {
     });
 
     const payload = { id: sub.id, ...serializeDocData(sub) };
+
+    // Only mint a spin token for perfect-score submissions.
     if (sub.prize === "pending" && sub.status === "pending") {
       try {
         payload.spinToken = mintSpinToken(sessionId);
@@ -124,13 +136,29 @@ const createSubmission = asyncHandler(async (req, res) => {
       }
     }
 
+    // Never expose internal answer array or IP in the public response.
+    delete payload.answers;
+    delete payload.ip;
+
     res.status(201).json({ success: true, data: payload });
   } catch (err) {
     const code = err.code;
-    if (code === "NO_SESSION" || code === "INVALID_ANSWERS_LENGTH" || code === "INVALID_ANSWER_INDEX") {
+
+    // Validation errors: use generic messages to avoid information leakage.
+    if (
+      code === "NO_SESSION" ||
+      code === "INVALID_ANSWERS_LENGTH" ||
+      code === "INVALID_ANSWER_INDEX"
+    ) {
+      log("warn", "submission_validation_failed", {
+        requestId: req.requestId,
+        code,
+        // Only log the detail server-side, never in the response.
+        detail: err.message,
+      });
       return res.status(400).json({
         success: false,
-        message: err.message || "Validation failed.",
+        message: "Submission validation failed. Please refresh and try again.",
       });
     }
     if (code === "NO_QUESTIONS") {
@@ -146,13 +174,16 @@ const createSubmission = asyncHandler(async (req, res) => {
 
 /**
  * DELETE /api/submissions/:id  (admin only)
+ *
+ * Deletes the submission and its directly associated registration records.
+ * Does NOT cascade to other records by IP — see Submission.delete() for rationale.
  */
 const deleteSubmission = asyncHandler(async (req, res) => {
   const sub = await SubmissionModel.findById(req.params.id);
   if (!sub) return res.status(404).json({ success: false, message: "Submission not found." });
 
   await SubmissionModel.delete(req.params.id);
-  res.json({ success: true, message: "Submission and all linked records deleted." });
+  res.json({ success: true, message: "Submission and linked registration records deleted." });
 });
 
 module.exports = { getAllSubmissions, getSubmission, createSubmission, deleteSubmission };
