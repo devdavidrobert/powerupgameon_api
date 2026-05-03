@@ -1,33 +1,66 @@
 const rateLimit = require("express-rate-limit");
+const { redisUrl } = require("../config/env");
+const { log } = require("../utils/logger");
 
-/**
- * Strict limiter for the registration endpoint.
- * Prevents bots from rapidly bulk-registering names.
- */
+function tryRedisStore() {
+  if (!redisUrl) return null;
+  try {
+    const { RedisStore } = require("rate-limit-redis");
+    const { createClient } = require("redis");
+    const client = createClient({ url: redisUrl });
+    client.connect().catch((err) => log("error", "redis_connect_failed", { err: String(err) }));
+    return new RedisStore({
+      sendCommand: (...args) => client.sendCommand(args),
+    });
+  } catch (err) {
+    log("warn", "rate_limit_redis_unavailable", { err: String(err) });
+    return null;
+  }
+}
+
+const redisStore = tryRedisStore();
+
 const registrationLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5,
+  windowMs: 60 * 60 * 1000,
+  max: 3,
   standardHeaders: true,
   legacyHeaders: false,
+  keyPrefix: "rl_reg",
+  ...(redisStore ? { store: redisStore } : {}),
   message: {
     success: false,
     message: "Too many registration attempts from this IP. Please try again in an hour.",
   },
 });
 
-/**
- * Strict limiter for the spin endpoint.
- * One spin per session is enforced by logic, but this stops hammering.
- */
-const spinLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3,
+const submissionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  keyPrefix: "rl_sub",
+  keyGenerator: (req) => req.ip || "unknown",
+  message: {
+    success: false,
+    message: "Too many submissions. Please try again later.",
+  },
+});
+
+const spinLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyPrefix: "rl_spin",
+  ...(redisStore ? { store: redisStore } : {}),
+  keyGenerator: (req) => {
+    const sid = req.body && typeof req.body.sessionId === "string" ? req.body.sessionId : "na";
+    return `${req.ip || "unknown"}:${sid}`;
+  },
   message: {
     success: false,
     message: "Too many spin attempts. Please try again later.",
   },
 });
 
-module.exports = { registrationLimiter, spinLimiter };
+module.exports = { registrationLimiter, submissionLimiter, spinLimiter };

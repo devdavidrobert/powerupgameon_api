@@ -3,17 +3,13 @@ const {
   getAllSubmissions,
   getSubmission,
   createSubmission,
-  spin,
   deleteSubmission,
 } = require("../controllers/submissionsController");
 const { authenticate } = require("../middleware/authenticate");
-const { spinLimiter } = require("../middleware/rateLimiters");
+const { submissionLimiter } = require("../middleware/rateLimiters");
 
-// Public
-router.post("/", createSubmission);
-router.post("/:sessionId/spin", spinLimiter, spin);
+router.post("/", submissionLimiter, createSubmission);
 
-// Admin only
 router.get("/", authenticate, getAllSubmissions);
 router.get("/:id", authenticate, getSubmission);
 router.delete("/:id", authenticate, deleteSubmission);

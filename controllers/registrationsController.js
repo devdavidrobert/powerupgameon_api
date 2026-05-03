@@ -2,10 +2,26 @@ const RegistrationModel = require("../models/Registration");
 const SubmissionModel = require("../models/Submission");
 const { asyncHandler } = require("../utils/asyncHandler");
 const { normalizeName } = require("../utils/helpers");
+const { log } = require("../utils/logger");
+
+const NAME_PART_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9'\- ]{0,49}$/;
+
+function validateNamePart(value, label) {
+  const t = typeof value === "string" ? value.trim() : "";
+  if (!t) {
+    return `${label} is required.`;
+  }
+  if (t.length > 50) {
+    return `${label} must be at most 50 characters.`;
+  }
+  if (!NAME_PART_PATTERN.test(t)) {
+    return `${label} may only contain letters, numbers, spaces, apostrophes, and hyphens.`;
+  }
+  return null;
+}
 
 /**
  * GET /api/registrations
- * Returns all registrations cross-referenced with submission status.
  */
 const getAllRegistrations = asyncHandler(async (req, res) => {
   const [registrations, submissions] = await Promise.all([
@@ -25,13 +41,17 @@ const getAllRegistrations = asyncHandler(async (req, res) => {
 
 /**
  * POST /api/registrations
- * Register a new player. Enforces name uniqueness + 12-hour device cooldown.
  */
 const register = asyncHandler(async (req, res) => {
   const { firstName, lastName, sessionId, ip, userAgent } = req.body;
 
-  if (!firstName?.trim() || !lastName?.trim()) {
-    return res.status(400).json({ success: false, message: "firstName and lastName are required." });
+  const fnErr = validateNamePart(firstName, "firstName");
+  if (fnErr) {
+    return res.status(400).json({ success: false, message: fnErr });
+  }
+  const lnErr = validateNamePart(lastName, "lastName");
+  if (lnErr) {
+    return res.status(400).json({ success: false, message: lnErr });
   }
   if (!sessionId) {
     return res.status(400).json({ success: false, message: "sessionId is required." });
@@ -40,7 +60,6 @@ const register = asyncHandler(async (req, res) => {
   const fullName = `${firstName.trim()} ${lastName.trim()}`;
   const normalized = normalizeName(fullName);
 
-  // Rule 1: Device cooldown
   const alreadyPlayed = await RegistrationModel.sessionHasPlayed(sessionId);
   if (alreadyPlayed) {
     return res.status(409).json({
@@ -50,7 +69,6 @@ const register = asyncHandler(async (req, res) => {
     });
   }
 
-  // Rule 2: Name uniqueness
   const nameExists = await RegistrationModel.nameExists(normalized);
   if (nameExists) {
     return res.status(409).json({
@@ -68,6 +86,8 @@ const register = asyncHandler(async (req, res) => {
     userAgent: userAgent || req.headers["user-agent"] || "unknown",
   });
 
+  log("info", "registration_ok", { requestId: req.requestId, sessionId });
+
   res.status(201).json({
     success: true,
     message: "Registration successful.",
@@ -77,7 +97,6 @@ const register = asyncHandler(async (req, res) => {
 
 /**
  * DELETE /api/registrations/:id
- * Admin: completely wipe a player so they can replay.
  */
 const deleteRegistration = asyncHandler(async (req, res) => {
   const reg = await RegistrationModel.findById(req.params.id);

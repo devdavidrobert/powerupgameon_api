@@ -1,21 +1,35 @@
 const QuestionModel = require("../models/Question");
 const { asyncHandler } = require("../utils/asyncHandler");
 
+function toPublicQuestion(doc) {
+  if (!doc) return doc;
+  const { correctIndex, ...rest } = doc;
+  return rest;
+}
+
 /**
- * GET /api/questions
+ * GET /api/questions (public — no correct answers)
  */
 const getAllQuestions = asyncHandler(async (req, res) => {
+  const questions = await QuestionModel.findAll();
+  res.json({ success: true, data: questions.map(toPublicQuestion) });
+});
+
+/**
+ * GET /api/questions/admin/full (admin — includes correctIndex)
+ */
+const getAllQuestionsAdmin = asyncHandler(async (req, res) => {
   const questions = await QuestionModel.findAll();
   res.json({ success: true, data: questions });
 });
 
 /**
- * GET /api/questions/:id
+ * GET /api/questions/:id (public — stripped)
  */
 const getQuestion = asyncHandler(async (req, res) => {
   const question = await QuestionModel.findById(req.params.id);
   if (!question) return res.status(404).json({ success: false, message: "Question not found." });
-  res.json({ success: true, data: question });
+  res.json({ success: true, data: toPublicQuestion(question) });
 });
 
 /**
@@ -81,4 +95,11 @@ const deleteQuestion = asyncHandler(async (req, res) => {
   res.json({ success: true, message: "Question deleted." });
 });
 
-module.exports = { getAllQuestions, getQuestion, createQuestion, updateQuestion, deleteQuestion };
+module.exports = {
+  getAllQuestions,
+  getAllQuestionsAdmin,
+  getQuestion,
+  createQuestion,
+  updateQuestion,
+  deleteQuestion,
+};

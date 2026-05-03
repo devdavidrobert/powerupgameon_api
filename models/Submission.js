@@ -15,6 +15,7 @@ const SESSIONS_COLLECTION = "sessions";
  * @property {string}  status   - "pending" | "completed"
  * @property {Date}    submittedAt
  * @property {Date}    [finalizedAt]
+ * @property {number[]} [answers]
  */
 
 const SubmissionModel = {
@@ -58,76 +59,148 @@ const SubmissionModel = {
   },
 
   /**
-   * Create a new submission record. Idempotent: if sessionId already has a
-   * submission it returns the existing one.
-   * @param {{ sessionId: string, fullName: string, normalizedName: string, score: number, total: number, percentage: number, prize?: string, userAgent?: string }} data
+   * Validate answers against Firestore questions, compute score server-side,
+   * ignore any client-supplied prize/score. Uses a transaction for idempotency.
+   *
+   * @param {{ sessionId: string, fullName: string, normalizedName: string, answers: number[], userAgent?: string }} data
    * @returns {Promise<Submission>}
    */
   async create(data) {
+    const QuestionModel = require("./Question");
     const db = getDb();
-    const { sessionId, ...rest } = data;
+    const { sessionId, fullName, normalizedName, answers, userAgent } = data;
+
+    const questions = await QuestionModel.findAll();
+    if (!questions.length) {
+      const err = new Error("No questions configured.");
+      err.code = "NO_QUESTIONS";
+      throw err;
+    }
+
+    if (!Array.isArray(answers) || answers.length !== questions.length) {
+      const err = new Error("answers must match the number of questions.");
+      err.code = "INVALID_ANSWERS_LENGTH";
+      throw err;
+    }
+
+    let score = 0;
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      const ans = answers[i];
+      if (!Number.isInteger(ans) || ans < 0 || ans >= q.options.length) {
+        const err = new Error(`Invalid answer index for question ${i}.`);
+        err.code = "INVALID_ANSWER_INDEX";
+        throw err;
+      }
+      if (ans === q.correctIndex) score += 1;
+    }
+
+    const total = questions.length;
+    if (score > total) {
+      const err = new Error("Invalid score.");
+      err.code = "INVALID_SCORE";
+      throw err;
+    }
+
+    const percentage = Math.round((score / total) * 100);
+    const prize = score === total ? "pending" : "Nothing";
 
     const submissionRef = db.collection(COLLECTION).doc(sessionId);
     const sessionRef = db.collection(SESSIONS_COLLECTION).doc(sessionId);
 
-    const [subSnap, sessionSnap] = await Promise.all([
-      submissionRef.get(),
-      sessionRef.get(),
-    ]);
+    return db.runTransaction(async (t) => {
+      const [subSnap, sessionSnap] = await Promise.all([
+        t.get(submissionRef),
+        t.get(sessionRef),
+      ]);
 
-    if (!sessionSnap.exists) {
-      throw new Error("No registration found for this session.");
-    }
+      if (!sessionSnap.exists) {
+        const err = new Error("No registration found for this session.");
+        err.code = "NO_SESSION";
+        throw err;
+      }
 
-    // Idempotent — return existing record
-    if (subSnap.exists) {
-      return { id: subSnap.id, ...subSnap.data() };
-    }
+      if (subSnap.exists) {
+        return { id: subSnap.id, ...subSnap.data() };
+      }
 
-    const now = new Date();
-    const payload = {
-      ...rest,
-      sessionId,
-      status: rest.prize === "pending" ? "pending" : "completed",
-      submittedAt: now,
-    };
+      const now = new Date();
+      const payload = {
+        sessionId,
+        fullName: fullName.toUpperCase(),
+        normalizedName,
+        score,
+        total,
+        percentage,
+        prize,
+        answers,
+        userAgent: userAgent || "unknown",
+        status: prize === "pending" ? "pending" : "completed",
+        submittedAt: now,
+      };
 
-    await submissionRef.set(payload);
+      t.set(submissionRef, payload);
+      t.set(
+        sessionRef,
+        {
+          hasPlayed: true,
+          playedAt: now,
+          score,
+          percentage,
+          prize,
+          status: prize === "pending" ? "pending" : "completed",
+        },
+        { merge: true }
+      );
 
-    // Mark session as played
-    await sessionRef.set(
-      { hasPlayed: true, playedAt: now, score: rest.score, percentage: rest.percentage },
-      { merge: true }
-    );
-
-    return { id: sessionId, ...payload };
+      return { id: sessionId, ...payload };
+    });
   },
 
   /**
-   * Update the prize on an existing submission (called after wheel spin).
+   * Atomically assign wheel prize when submission is still "pending".
    * @param {string} sessionId
-   * @param {string} prize
-   * @returns {Promise<void>}
+   * @param {string} prizeName
+   * @returns {Promise<{ finalized: boolean, previousPrize?: string }>}
    */
-  async updatePrize(sessionId, prize) {
+  async finalizeSpinPrize(sessionId, prizeName) {
     const db = getDb();
     const now = new Date();
+    const submissionRef = db.collection(COLLECTION).doc(sessionId);
+    const sessionRef = db.collection(SESSIONS_COLLECTION).doc(sessionId);
 
-    await Promise.all([
-      db.collection(COLLECTION).doc(sessionId).update({
-        prize,
+    return db.runTransaction(async (t) => {
+      const subSnap = await t.get(submissionRef);
+      if (!subSnap.exists) {
+        const err = new Error("Submission not found.");
+        err.code = "NOT_FOUND";
+        throw err;
+      }
+
+      const d = subSnap.data();
+      if (d.prize && d.prize !== "pending") {
+        return { finalized: false, previousPrize: d.prize };
+      }
+
+      t.update(submissionRef, {
+        prize: prizeName,
         status: "completed",
         finalizedAt: now,
-      }),
-      db.collection(SESSIONS_COLLECTION).doc(sessionId).update({
-        prize,
-        status: "completed",
-      }),
-    ]);
+      });
+      t.set(
+        sessionRef,
+        {
+          prize: prizeName,
+          status: "completed",
+        },
+        { merge: true }
+      );
+
+      return { finalized: true };
+    });
   },
 
   /**
-   * Hard delete a submission and its linked registration data.
    * @param {string} id
    * @returns {Promise<void>}
    */
@@ -136,37 +209,27 @@ const SubmissionModel = {
     const sub = await this.findById(id);
     const batch = db.batch();
 
-    // Delete submission
     batch.delete(db.collection(COLLECTION).doc(id));
 
     if (sub) {
-      // Delete matching registration
       const regSnap = await db.collection("registrations").doc(id).get();
       if (regSnap.exists) {
         const regData = regSnap.data();
         batch.delete(regSnap.ref);
 
         if (regData?.normalizedName) {
-          batch.delete(
-            db.collection("registrations").doc(`name_${regData.normalizedName}`)
-          );
+          batch.delete(db.collection("registrations").doc(`name_${regData.normalizedName}`));
         }
 
-        // Delete all other registrations sharing the same IP
         if (regData?.ip && regData.ip !== "unknown") {
-          const ipSnap = await db
-            .collection("registrations")
-            .where("ip", "==", regData.ip)
-            .get();
+          const ipSnap = await db.collection("registrations").where("ip", "==", regData.ip).get();
 
           ipSnap.forEach((d) => {
             if (d.id !== id) {
               batch.delete(d.ref);
               batch.delete(db.collection(COLLECTION).doc(d.id));
               if (d.data()?.normalizedName) {
-                batch.delete(
-                  db.collection("registrations").doc(`name_${d.data().normalizedName}`)
-                );
+                batch.delete(db.collection("registrations").doc(`name_${d.data().normalizedName}`));
               }
             }
           });

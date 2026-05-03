@@ -3,6 +3,11 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
+const { allowedOrigins, nodeEnv, port, apiCsrfSecret } = require("./config/env");
+const { requestContext } = require("./middleware/requestContext");
+const { requireCsrfToken, mintCsrfToken } = require("./middleware/csrf");
+const { log } = require("./utils/logger");
+
 const questionsRouter = require("./routes/questions");
 const prizesRouter = require("./routes/prizes");
 const registrationsRouter = require("./routes/registrations");
@@ -10,24 +15,37 @@ const submissionsRouter = require("./routes/submissions");
 const settingsRouter = require("./routes/settings");
 const rafflesRouter = require("./routes/raffles");
 const authRouter = require("./routes/auth");
+const spinRouter = require("./routes/spin");
 
 const { errorHandler } = require("./middleware/errorHandler");
-const { requestLogger } = require("./middleware/requestLogger");
+
+if (nodeEnv === "production" && !apiCsrfSecret) {
+  throw new Error("API_CSRF_SECRET must be set in production.");
+}
 
 const app = express();
 
-// ── Security & Parsing ──────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(",") || "*" }));
-app.use(express.json());
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      log("warn", "cors_rejected", { origin });
+      return callback(null, false);
+    },
+    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", "X-Request-Id"],
+  })
+);
+
+app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use(requestContext);
 
-// ── Logging ──────────────────────────────────────────────────────────
-app.use(requestLogger);
-
-// ── Global Rate Limiter ──────────────────────────────────────────────
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
@@ -35,31 +53,35 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-// ── Health Check ─────────────────────────────────────────────────────
+app.get("/api/csrf-token", (req, res) => {
+  res.json({ success: true, data: { csrfToken: mintCsrfToken() } });
+});
+
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// ── API Routes ───────────────────────────────────────────────────────
-app.use("/api/auth", authRouter);
-app.use("/api/questions", questionsRouter);
-app.use("/api/prizes", prizesRouter);
-app.use("/api/registrations", registrationsRouter);
-app.use("/api/submissions", submissionsRouter);
-app.use("/api/settings", settingsRouter);
-app.use("/api/raffles", rafflesRouter);
+app.use("/api/auth", requireCsrfToken, authRouter);
+app.use("/api/questions", requireCsrfToken, questionsRouter);
+app.use("/api/prizes", requireCsrfToken, prizesRouter);
+app.use("/api/registrations", requireCsrfToken, registrationsRouter);
+app.use("/api/submissions", requireCsrfToken, submissionsRouter);
+app.use("/api/spin", requireCsrfToken, spinRouter);
+app.use("/api/settings", requireCsrfToken, settingsRouter);
+app.use("/api/raffles", requireCsrfToken, rafflesRouter);
 
-// ── 404 Handler ──────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Route not found." });
 });
 
-// ── Global Error Handler ─────────────────────────────────────────────
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`🚀 Steam API running on port ${PORT}`);
-});
+const PORT = port || 4000;
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    log("info", "api_listen", { port: PORT, nodeEnv });
+  });
+}
 
 module.exports = app;

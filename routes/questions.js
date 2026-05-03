@@ -1,6 +1,7 @@
 const router = require("express").Router();
 const {
   getAllQuestions,
+  getAllQuestionsAdmin,
   getQuestion,
   createQuestion,
   updateQuestion,
@@ -8,11 +9,10 @@ const {
 } = require("../controllers/questionsController");
 const { authenticate } = require("../middleware/authenticate");
 
-// Public — players need the question list to play
+router.get("/admin/full", authenticate, getAllQuestionsAdmin);
 router.get("/", getAllQuestions);
 router.get("/:id", getQuestion);
 
-// Admin only
 router.post("/", authenticate, createQuestion);
 router.put("/:id", authenticate, updateQuestion);
 router.delete("/:id", authenticate, deleteQuestion);
