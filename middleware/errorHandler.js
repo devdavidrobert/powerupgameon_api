@@ -15,6 +15,14 @@ const errorHandler = (err, req, res, next) => {
   if (err.code === "not-found") {
     return res.status(404).json({ success: false, message: "Resource not found." });
   }
+  if (err.code === "failed-precondition") {
+    return res.status(500).json({
+      success: false,
+      code: "FIRESTORE_INDEX_REQUIRED",
+      message:
+        "A required Firestore composite index is missing. Check server logs for the direct Firebase Console index creation link.",
+    });
+  }
 
   const statusCode = err.statusCode || err.status || 500;
 
