@@ -62,6 +62,7 @@ const createQuestion = asyncHandler(async (req, res) => {
     order: nextOrder,
   });
 
+  QuestionModel.invalidateListCache();
   res.status(201).json({ success: true, data: question });
 });
 
@@ -81,6 +82,7 @@ const updateQuestion = asyncHandler(async (req, res) => {
   if (order !== undefined) updates.order = Number(order);
 
   const updated = await QuestionModel.update(req.params.id, updates);
+  QuestionModel.invalidateListCache();
   res.json({ success: true, data: updated });
 });
 
@@ -92,6 +94,7 @@ const deleteQuestion = asyncHandler(async (req, res) => {
   if (!existing) return res.status(404).json({ success: false, message: "Question not found." });
 
   await QuestionModel.delete(req.params.id);
+  QuestionModel.invalidateListCache();
   res.json({ success: true, message: "Question deleted." });
 });
 

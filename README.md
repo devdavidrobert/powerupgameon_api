@@ -13,7 +13,12 @@ npm run dev            # development (nodemon)
 npm start              # production
 ```
 
-Firebase credentials: either set `FIREBASE_SERVICE_ACCOUNT_JSON` in `.env`, or place `serviceAccountKey.json` in the project root.
+Firebase credentials: set `FIREBASE_SERVICE_ACCOUNT_JSON` in `.env` (single-line JSON). Do not commit service account files; rotate any key that was ever exposed.
+
+**Production operations**
+
+- Set **`REDIS_URL`** so registration, submission, spin, and global rate limits share counters across all API instances. If it is unset in production, the process logs a warning and limiters fall back to in-memory stores.
+- Set **`TRUST_PROXY=1`** (or `true`) when the API sits behind a reverse proxy or load balancer so client IPs and rate-limit keys use `X-Forwarded-For` correctly.
 
 ---
 
@@ -50,6 +55,7 @@ steam-api/
 │   └── Raffle.js
 ├── middleware/
 │   ├── authenticate.js      # Firebase ID token verification
+│   ├── requireAdmin.js      # Admin custom claim / email allowlist
 │   ├── errorHandler.js      # Global error handler
 │   ├── requestLogger.js     # Coloured request logs
 │   └── rateLimiters.js      # Per-route rate limits
@@ -62,13 +68,15 @@ steam-api/
 
 ## Authentication
 
-Admin routes require a Firebase ID token in the `Authorization` header:
+Admin routes require a Firebase ID token in the `Authorization` header **and** admin authorization:
 
 ```
 Authorization: Bearer <Firebase ID Token>
 ```
 
-Obtain the token from Firebase client SDK: `auth.currentUser.getIdToken()`.
+Obtain the token from the Firebase client SDK: `auth.currentUser.getIdToken()`.
+
+**Admin checks (production):** set the Firebase Auth custom claim `admin: true` for staff accounts. For bootstrap only, set `ALLOWED_ADMIN_EMAILS` in `.env` (comma-separated, same as the Next.js app). Requests that pass token verification but are not admins receive `403` with `code: "FORBIDDEN_ADMIN"`.
 
 ---
 
@@ -177,10 +185,19 @@ All errors follow this shape:
 Common HTTP codes:
 - `400` Bad Request — missing/invalid fields
 - `401` Unauthorized — missing/invalid token
-- `403` Forbidden — Firestore permission denied
+- `403` Forbidden — CSRF invalid or `FORBIDDEN_ADMIN` (not an admin user)
 - `404` Not Found
 - `409` Conflict — name taken / session cooldown
 - `422` Unprocessable — filter yields no results
 - `429` Too Many Requests — rate limit hit
 - `500` Internal Server Error
-# powerupgameon_api
+
+---
+
+## Tests
+
+```bash
+npm test
+```
+
+Runs Jest unit tests for `authenticate` and `requireAdmin` middleware.

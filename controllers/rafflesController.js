@@ -39,11 +39,10 @@ const createRaffle = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: "winnerCount must be at least 1." });
   }
 
-  let pool = await SubmissionModel.findAll();
-
-  // Apply filters
-  if (minScore > 0) pool = pool.filter((s) => s.score >= minScore);
-  if (prizeWinnersOnly) pool = pool.filter((s) => s.prize && s.prize !== "Nothing");
+  const pool = await SubmissionModel.findForRafflePool({
+    minScore: Number(minScore) || 0,
+    prizeWinnersOnly: Boolean(prizeWinnersOnly),
+  });
 
   if (pool.length === 0) {
     return res.status(422).json({

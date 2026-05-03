@@ -6,6 +6,7 @@ const { asyncHandler } = require("../utils/asyncHandler");
  */
 const getSettings = asyncHandler(async (req, res) => {
   const settings = await SettingsModel.get();
+  res.set("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
   res.json({ success: true, data: settings });
 });
 

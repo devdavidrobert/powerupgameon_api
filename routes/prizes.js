@@ -7,14 +7,15 @@ const {
   deletePrize,
 } = require("../controllers/prizesController");
 const { authenticate } = require("../middleware/authenticate");
+const { requireAdmin } = require("../middleware/requireAdmin");
 
 // Public — wheel needs the prize list
 router.get("/", getAllPrizes);
 router.get("/:id", getPrize);
 
 // Admin only
-router.post("/", authenticate, createPrize);
-router.put("/:id", authenticate, updatePrize);
-router.delete("/:id", authenticate, deletePrize);
+router.post("/", authenticate, requireAdmin, createPrize);
+router.put("/:id", authenticate, requireAdmin, updatePrize);
+router.delete("/:id", authenticate, requireAdmin, deletePrize);
 
 module.exports = router;

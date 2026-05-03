@@ -21,6 +21,7 @@ const authenticate = async (req, res, next) => {
     req.user = {
       uid: decoded.uid,
       email: decoded.email,
+      admin: decoded.admin === true,
     };
     next();
   } catch (err) {

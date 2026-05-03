@@ -2,6 +2,10 @@ const { getDb } = require("../config/firebase");
 
 const COLLECTION = "questions";
 
+const LIST_CACHE_TTL_MS = 45_000;
+/** @type {{ at: number, rows: object[] } | null} */
+let listCache = null;
+
 /**
  * @typedef {Object} Question
  * @property {string}   id
@@ -12,17 +16,29 @@ const COLLECTION = "questions";
  */
 
 const QuestionModel = {
+  /** Call after admin create/update/delete so submissions see fresh questions quickly. */
+  invalidateListCache() {
+    listCache = null;
+  },
+
   /**
    * Return all questions ordered by `order` field.
    * @returns {Promise<Question[]>}
    */
   async findAll() {
+    const now = Date.now();
+    if (listCache && now - listCache.at < LIST_CACHE_TTL_MS) {
+      return listCache.rows;
+    }
+
     const snap = await getDb()
       .collection(COLLECTION)
       .orderBy("order")
       .get();
 
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    listCache = { at: now, rows };
+    return rows;
   },
 
   /**

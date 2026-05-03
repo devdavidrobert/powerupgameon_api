@@ -34,6 +34,35 @@ const SubmissionModel = {
   },
 
   /**
+   * Raffle eligibility: uses Firestore filters when possible to avoid loading all submissions.
+   * @param {{ minScore?: number, prizeWinnersOnly?: boolean }} opts
+   * @returns {Promise<Array<{ id: string } & Record<string, unknown>>}
+   */
+  async findForRafflePool({ minScore = 0, prizeWinnersOnly = false } = {}) {
+    const db = getDb();
+    const ref = db.collection(COLLECTION);
+
+    if (minScore > 0) {
+      const snap = await ref.where("score", ">=", minScore).get();
+      let rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      if (prizeWinnersOnly) {
+        rows = rows.filter(
+          (s) => s.prize && s.prize !== "Nothing" && s.prize !== "pending"
+        );
+      }
+      return rows;
+    }
+
+    if (prizeWinnersOnly) {
+      const snap = await ref.where("prize", "not-in", ["Nothing", "pending"]).get();
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    }
+
+    const snap = await ref.get();
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  },
+
+  /**
    * @param {string} id
    * @returns {Promise<Submission|null>}
    */
@@ -280,36 +309,83 @@ const SubmissionModel = {
    * @returns {Promise<void>}
    */
   async delete(id) {
+    const PrizeModel = require("./Prize");
     const db = getDb();
     const sub = await this.findById(id);
-    const batch = db.batch();
+    const statsRef = AGGREGATES_DOC();
 
-    batch.delete(db.collection(COLLECTION).doc(id));
+    const submissionIdsToDelete = new Set([id]);
+    let regSnap = null;
 
     if (sub) {
-      const regSnap = await db.collection("registrations").doc(id).get();
+      regSnap = await db.collection("registrations").doc(id).get();
       if (regSnap.exists) {
         const regData = regSnap.data();
-        batch.delete(regSnap.ref);
-
-        if (regData?.normalizedName) {
-          batch.delete(db.collection("registrations").doc(`name_${regData.normalizedName}`));
-        }
-
         if (regData?.ip && regData.ip !== "unknown") {
           const ipSnap = await db.collection("registrations").where("ip", "==", regData.ip).get();
-
           ipSnap.forEach((d) => {
-            if (d.id !== id) {
-              batch.delete(d.ref);
-              batch.delete(db.collection(COLLECTION).doc(d.id));
-              if (d.data()?.normalizedName) {
-                batch.delete(db.collection("registrations").doc(`name_${d.data().normalizedName}`));
-              }
-            }
+            if (d.id !== id) submissionIdsToDelete.add(d.id);
           });
         }
       }
+    }
+
+    const batch = db.batch();
+
+    const prizeRows = await PrizeModel.findAll();
+    const realPrizeByName = new Map(
+      prizeRows.filter((p) => p.isRealPrize).map((p) => [p.name, true])
+    );
+
+    const subRefs = [...submissionIdsToDelete].map((sid) => db.collection(COLLECTION).doc(sid));
+    const subSnaps = subRefs.length ? await db.getAll(...subRefs) : [];
+
+    const decrementByPrize = {};
+    for (const snap of subSnaps) {
+      if (!snap.exists) continue;
+      const { prize } = snap.data();
+      if (!prize || prize === "pending" || prize === "Nothing") continue;
+      if (!realPrizeByName.has(prize)) continue;
+      decrementByPrize[prize] = (decrementByPrize[prize] || 0) + 1;
+    }
+
+    for (const sid of submissionIdsToDelete) {
+      batch.delete(db.collection(COLLECTION).doc(sid));
+    }
+
+    if (sub && regSnap?.exists) {
+      const regData = regSnap.data();
+      batch.delete(regSnap.ref);
+
+      if (regData?.normalizedName) {
+        batch.delete(db.collection("registrations").doc(`name_${regData.normalizedName}`));
+      }
+
+      if (regData?.ip && regData.ip !== "unknown") {
+        const ipSnap = await db.collection("registrations").where("ip", "==", regData.ip).get();
+
+        ipSnap.forEach((d) => {
+          if (d.id !== id) {
+            batch.delete(d.ref);
+            if (d.data()?.normalizedName) {
+              batch.delete(db.collection("registrations").doc(`name_${d.data().normalizedName}`));
+            }
+          }
+        });
+      }
+    }
+
+    if (Object.keys(decrementByPrize).length) {
+      const statsSnap = await statsRef.get();
+      const prev = statsSnap.exists ? statsSnap.data().prizeAwardCounts || {} : {};
+      const next = { ...prev };
+      const now = new Date();
+      for (const [prizeName, n] of Object.entries(decrementByPrize)) {
+        const v = Math.max(0, (next[prizeName] || 0) - n);
+        if (v === 0) delete next[prizeName];
+        else next[prizeName] = v;
+      }
+      batch.set(statsRef, { prizeAwardCounts: next, updatedAt: now }, { merge: true });
     }
 
     await batch.commit();

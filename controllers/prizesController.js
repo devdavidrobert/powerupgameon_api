@@ -6,6 +6,7 @@ const { asyncHandler } = require("../utils/asyncHandler");
  */
 const getAllPrizes = asyncHandler(async (req, res) => {
   const prizes = await PrizeModel.findAll();
+  res.set("Cache-Control", "public, max-age=30, stale-while-revalidate=120");
   res.json({ success: true, data: prizes });
 });
 
