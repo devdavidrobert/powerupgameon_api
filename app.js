@@ -3,7 +3,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
-const { allowedOrigins, nodeEnv, port, apiCsrfSecret } = require("./config/env");
+const { allowedOrigins, nodeEnv, port, apiCsrfSecret, trustProxy } = require("./config/env");
 const { requestContext } = require("./middleware/requestContext");
 const { requireCsrfToken, mintCsrfToken } = require("./middleware/csrf");
 const { log } = require("./utils/logger");
@@ -23,7 +23,15 @@ if (nodeEnv === "production" && !apiCsrfSecret) {
   throw new Error("API_CSRF_SECRET must be set in production.");
 }
 
+if (nodeEnv === "production" && !process.env.SPIN_TOKEN_SECRET) {
+  throw new Error("SPIN_TOKEN_SECRET must be set in production.");
+}
+
 const app = express();
+
+if (trustProxy) {
+  app.set("trust proxy", 1);
+}
 
 app.use(helmet());
 
@@ -44,11 +52,15 @@ app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(requestContext);
 
+const { rateLimitRedisStore } = require("./middleware/rateLimiters");
+const { getClientIp } = require("./utils/clientIp");
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
+  ...(rateLimitRedisStore ? { store: rateLimitRedisStore } : {}),
+  keyGenerator: (req) => getClientIp(req),
   message: { success: false, message: "Too many requests. Please try again later." },
 });
 app.use(globalLimiter);

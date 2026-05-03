@@ -1,7 +1,7 @@
 const RaffleModel = require("../models/Raffle");
 const SubmissionModel = require("../models/Submission");
 const { asyncHandler } = require("../utils/asyncHandler");
-const { fisherYatesShuffle } = require("../utils/helpers");
+const { fisherYatesShuffle, toISOString } = require("../utils/helpers");
 
 /**
  * GET /api/raffles
@@ -74,7 +74,7 @@ const createRaffle = asyncHandler(async (req, res) => {
     prize: s.prize,
     score: s.score,
     percentage: s.percentage,
-    submittedAt: s.submittedAt,
+    submittedAt: toISOString(s.submittedAt),
   }));
 
   const result = await RaffleModel.createRaffleWithWinners({ name: raffleName, winners });

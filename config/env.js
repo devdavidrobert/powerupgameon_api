@@ -7,6 +7,13 @@ const allowedOrigins =
 
 const realPrizeLimit = parseInt(process.env.REAL_PRIZE_LIMIT || "5", 10);
 
+/** Set TRUST_PROXY=1 when behind nginx, Cloud Run, etc., so req.ip / rate limits see the real client. */
+const trustProxy = process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
+
+const spinTokenSecret =
+  process.env.SPIN_TOKEN_SECRET ||
+  (nodeEnv === "development" ? "dev-spin-token-secret-change-me" : "");
+
 module.exports = {
   port: process.env.PORT || 4000,
   nodeEnv,
@@ -18,6 +25,9 @@ module.exports = {
   // CORS — never use * in production
   allowedOrigins,
   corsCredentials: true,
+
+  // Reverse proxy (nginx, load balancer) — required for accurate req.ip rate limits
+  trustProxy,
 
   // Rate Limiting
   rateLimitWindowMs: 15 * 60 * 1000,
@@ -33,6 +43,9 @@ module.exports = {
   // CSRF: HMAC-signed tokens (set in production)
   apiCsrfSecret: process.env.API_CSRF_SECRET || (nodeEnv === "development" ? "dev-csrf-secret-change-me" : ""),
 
-  // Optional Redis for rate limiting (REDIS_URL)
+  // Short-lived HMAC tokens for POST /spin (set in production)
+  spinTokenSecret,
+
+  // Optional Redis for rate limiting (REDIS_URL) — use in production for all limiters
   redisUrl: process.env.REDIS_URL || "",
 };

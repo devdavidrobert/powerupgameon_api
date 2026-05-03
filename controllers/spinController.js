@@ -1,23 +1,49 @@
+const crypto = require("crypto");
 const SubmissionModel = require("../models/Submission");
 const PrizeModel = require("../models/Prize");
 const { asyncHandler } = require("../utils/asyncHandler");
 const { REAL_PRIZE_LIMIT } = require("../config/env");
 const { log } = require("../utils/logger");
+const { assertChallengeOpen } = require("../utils/challengeWindow");
+const { verifySpinToken } = require("../utils/spinToken");
 
 const DEFAULT_ANIMATION_MS = 5000;
 
 /**
  * POST /api/spin
  * Server-side prize selection with REAL_PRIZE_LIMIT; idempotent per session.
+ * Body: { spinToken } — short-lived HMAC token minted on perfect-score submission.
  */
 const spinWheel = asyncHandler(async (req, res) => {
-  const { sessionId } = req.body || {};
+  try {
+    await assertChallengeOpen();
+  } catch (e) {
+    if (e.code === "CHALLENGE_NOT_STARTED" || e.code === "CHALLENGE_ENDED") {
+      return res.status(403).json({ success: false, code: e.code, message: e.message });
+    }
+    throw e;
+  }
 
-  if (!sessionId || typeof sessionId !== "string") {
-    return res.status(400).json({
-      success: false,
-      message: "sessionId is required.",
-    });
+  const spinToken = req.body && typeof req.body.spinToken === "string" ? req.body.spinToken : null;
+
+  let sessionId;
+  try {
+    if (!spinToken) {
+      return res.status(400).json({
+        success: false,
+        code: "SPIN_TOKEN_REQUIRED",
+        message: "spinToken is required. Complete the quiz to receive a token.",
+      });
+    }
+    sessionId = verifySpinToken(spinToken);
+  } catch (e) {
+    if (e.code === "SPIN_TOKEN_EXPIRED") {
+      return res.status(401).json({ success: false, code: e.code, message: e.message });
+    }
+    if (e.code === "SPIN_TOKEN_INVALID") {
+      return res.status(400).json({ success: false, code: e.code, message: e.message });
+    }
+    throw e;
   }
 
   const existing = await SubmissionModel.findById(sessionId);
@@ -66,10 +92,19 @@ const spinWheel = asyncHandler(async (req, res) => {
     return res.status(500).json({ success: false, message: "Prize inventory exhausted." });
   }
 
-  const won = pool[Math.floor(Math.random() * pool.length)];
+  const pickIdx = crypto.randomInt(0, pool.length);
+  const won = pool[pickIdx];
   const order = Number(won.order);
 
-  const result = await SubmissionModel.finalizeSpinPrize(sessionId, won.name);
+  const result = await SubmissionModel.finalizeSpinPrize(sessionId, won.name, !!won.isRealPrize);
+
+  log("info", "spin_audit", {
+    requestId: req.requestId,
+    sessionIdPrefix: sessionId.slice(0, 10),
+    prize: won.name,
+    isRealPrize: !!won.isRealPrize,
+    finalized: result.finalized,
+  });
 
   if (!result.finalized && result.previousPrize) {
     const prev = sorted.find((p) => p.name === result.previousPrize);

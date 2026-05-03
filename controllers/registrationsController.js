@@ -3,6 +3,9 @@ const SubmissionModel = require("../models/Submission");
 const { asyncHandler } = require("../utils/asyncHandler");
 const { normalizeName } = require("../utils/helpers");
 const { log } = require("../utils/logger");
+const { assertChallengeOpen } = require("../utils/challengeWindow");
+const { getClientIp } = require("../utils/clientIp");
+const { serializeDocData } = require("../utils/serializeFirestore");
 
 const NAME_PART_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9'\- ]{0,49}$/;
 
@@ -21,29 +24,49 @@ function validateNamePart(value, label) {
 }
 
 /**
- * GET /api/registrations
+ * GET /api/registrations?limit=&cursor=
+ * Paginated player list with completion status (batched submission lookups).
  */
 const getAllRegistrations = asyncHandler(async (req, res) => {
-  const [registrations, submissions] = await Promise.all([
-    RegistrationModel.findAll(),
-    SubmissionModel.findAll(),
-  ]);
+  const limit = Math.min(parseInt(String(req.query.limit || "50"), 10) || 50, 200);
+  let cursor = null;
+  if (req.query.cursor) {
+    try {
+      const raw = Buffer.from(String(req.query.cursor), "base64url").toString("utf8");
+      cursor = JSON.parse(raw);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid cursor." });
+    }
+  }
 
-  const submissionIds = new Set(submissions.map((s) => s.id));
+  const { items, nextCursor, hasMore } = await RegistrationModel.findPlayerPage({ limit, cursor });
+  const ids = items.map((r) => r.id);
+  const completedIds = await SubmissionModel.idsThatExist(ids);
 
-  const enriched = registrations.map((reg) => ({
-    ...reg,
-    status: submissionIds.has(reg.id) ? "completed" : "incomplete",
+  const enriched = items.map((reg) => ({
+    id: reg.id,
+    ...serializeDocData(reg),
+    status: completedIds.has(reg.id) ? "completed" : "incomplete",
   }));
 
-  res.json({ success: true, data: enriched });
+  const nextCursorEncoded =
+    hasMore && nextCursor
+      ? Buffer.from(JSON.stringify(nextCursor), "utf8").toString("base64url")
+      : null;
+
+  res.json({
+    success: true,
+    data: enriched,
+    nextCursor: nextCursorEncoded,
+    hasMore,
+  });
 });
 
 /**
  * POST /api/registrations
  */
 const register = asyncHandler(async (req, res) => {
-  const { firstName, lastName, sessionId, ip, userAgent } = req.body;
+  const { firstName, lastName, sessionId, userAgent } = req.body;
 
   const fnErr = validateNamePart(firstName, "firstName");
   if (fnErr) {
@@ -57,34 +80,46 @@ const register = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: "sessionId is required." });
   }
 
+  try {
+    await assertChallengeOpen();
+  } catch (e) {
+    if (e.code === "CHALLENGE_NOT_STARTED") {
+      return res.status(403).json({ success: false, code: e.code, message: e.message });
+    }
+    if (e.code === "CHALLENGE_ENDED") {
+      return res.status(403).json({ success: false, code: e.code, message: e.message });
+    }
+    throw e;
+  }
+
   const fullName = `${firstName.trim()} ${lastName.trim()}`;
   const normalized = normalizeName(fullName);
 
-  const alreadyPlayed = await RegistrationModel.sessionHasPlayed(sessionId);
-  if (alreadyPlayed) {
-    return res.status(409).json({
-      success: false,
-      code: "SESSION_COOLDOWN",
-      message: "You have already played. Please try again next time!",
+  try {
+    await RegistrationModel.register({
+      sessionId,
+      fullName,
+      normalizedName: normalized,
+      ip: getClientIp(req),
+      userAgent: typeof userAgent === "string" ? userAgent : req.headers["user-agent"] || "unknown",
     });
+  } catch (err) {
+    if (err.code === "SESSION_COOLDOWN") {
+      return res.status(409).json({
+        success: false,
+        code: "SESSION_COOLDOWN",
+        message: err.message,
+      });
+    }
+    if (err.code === "NAME_TAKEN") {
+      return res.status(409).json({
+        success: false,
+        code: "NAME_TAKEN",
+        message: `The name "${fullName}" has already been registered. One entry per person.`,
+      });
+    }
+    throw err;
   }
-
-  const nameExists = await RegistrationModel.nameExists(normalized);
-  if (nameExists) {
-    return res.status(409).json({
-      success: false,
-      code: "NAME_TAKEN",
-      message: `The name "${fullName}" has already been registered. One entry per person.`,
-    });
-  }
-
-  await RegistrationModel.register({
-    sessionId,
-    fullName,
-    normalizedName: normalized,
-    ip: ip || req.ip || "unknown",
-    userAgent: userAgent || req.headers["user-agent"] || "unknown",
-  });
 
   log("info", "registration_ok", { requestId: req.requestId, sessionId });
 

@@ -20,6 +20,8 @@ function tryRedisStore() {
 
 const redisStore = tryRedisStore();
 
+const { getClientIp } = require("../utils/clientIp");
+
 const registrationLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 3,
@@ -27,6 +29,7 @@ const registrationLimiter = rateLimit({
   legacyHeaders: false,
   keyPrefix: "rl_reg",
   ...(redisStore ? { store: redisStore } : {}),
+  keyGenerator: (req) => getClientIp(req),
   message: {
     success: false,
     message: "Too many registration attempts from this IP. Please try again in an hour.",
@@ -39,7 +42,8 @@ const submissionLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyPrefix: "rl_sub",
-  keyGenerator: (req) => req.ip || "unknown",
+  ...(redisStore ? { store: redisStore } : {}),
+  keyGenerator: (req) => getClientIp(req),
   message: {
     success: false,
     message: "Too many submissions. Please try again later.",
@@ -54,8 +58,14 @@ const spinLimiter = rateLimit({
   keyPrefix: "rl_spin",
   ...(redisStore ? { store: redisStore } : {}),
   keyGenerator: (req) => {
-    const sid = req.body && typeof req.body.sessionId === "string" ? req.body.sessionId : "na";
-    return `${req.ip || "unknown"}:${sid}`;
+    const body = req.body || {};
+    const sid =
+      typeof body.spinToken === "string"
+        ? body.spinToken.slice(0, 24)
+        : typeof body.sessionId === "string"
+          ? body.sessionId
+          : "na";
+    return `${getClientIp(req)}:${sid}`;
   },
   message: {
     success: false,
@@ -63,4 +73,10 @@ const spinLimiter = rateLimit({
   },
 });
 
-module.exports = { registrationLimiter, submissionLimiter, spinLimiter };
+module.exports = {
+  registrationLimiter,
+  submissionLimiter,
+  spinLimiter,
+  /** Shared Redis store for rate-limit-redis (null if REDIS_URL unset). */
+  rateLimitRedisStore: redisStore,
+};

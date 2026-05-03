@@ -1,3 +1,5 @@
+const crypto = require("crypto");
+
 /**
  * Normalize a player name for deduplication checks.
  * @param {string} name
@@ -7,14 +9,14 @@ const normalizeName = (name) =>
   name.trim().toLowerCase().replace(/\s+/g, " ");
 
 /**
- * Fisher-Yates in-place shuffle.
+ * Fisher-Yates in-place shuffle (cryptographically strong index picks).
  * @template T
  * @param {T[]} array
  * @returns {T[]}
  */
 const fisherYatesShuffle = (array) => {
   for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = crypto.randomInt(0, i + 1);
     [array[i], array[j]] = [array[j], array[i]];
   }
   return array;

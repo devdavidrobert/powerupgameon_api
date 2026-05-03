@@ -1,7 +1,9 @@
 const { getDb } = require("../config/firebase");
+const { FieldPath, Timestamp } = require("firebase-admin/firestore");
 
 const COLLECTION = "submissions";
 const SESSIONS_COLLECTION = "sessions";
+const AGGREGATES_DOC = () => getDb().collection("system").doc("aggregates");
 
 /**
  * @typedef {Object} Submission
@@ -41,19 +43,81 @@ const SubmissionModel = {
   },
 
   /**
-   * Count submissions per prize name (for inventory tracking).
+   * Batch existence check for submission doc ids (admin list enrichment).
+   * @param {string[]} ids
+   * @returns {Promise<Set<string>>}
+   */
+  async idsThatExist(ids) {
+    if (!ids.length) return new Set();
+    const db = getDb();
+    const refs = ids.map((id) => db.collection(COLLECTION).doc(id));
+    const snaps = await db.getAll(...refs);
+    return new Set(snaps.filter((s) => s.exists).map((s) => s.id));
+  },
+
+  /**
+   * Paginated submissions (newest first).
+   * @param {{ limit?: number, cursor?: { submittedAt: number, id: string }|null }} opts
+   */
+  async findPage({ limit = 50, cursor = null }) {
+    const db = getDb();
+    const cap = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    let q = db
+      .collection(COLLECTION)
+      .orderBy("submittedAt", "desc")
+      .orderBy(FieldPath.documentId(), "desc")
+      .limit(cap);
+
+    if (cursor && typeof cursor.submittedAt === "number" && cursor.id) {
+      const ts = Timestamp.fromMillis(cursor.submittedAt);
+      q = q.startAfter(ts, cursor.id);
+    }
+
+    const snap = await q.get();
+    const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const last = snap.docs[snap.docs.length - 1];
+    const hasMore = snap.docs.length === cap;
+    const nextCursor =
+      last && hasMore
+        ? { submittedAt: last.get("submittedAt")?.toMillis?.() ?? 0, id: last.id }
+        : null;
+
+    return { items, nextCursor, hasMore };
+  },
+
+  /**
+   * Prize award counts from `system/aggregates` (O(1)); rebuild from scan if missing.
    * @returns {Promise<Record<string, number>>}
    */
   async getPrizeCounts() {
-    const snap = await getDb().collection(COLLECTION).get();
+    const doc = await AGGREGATES_DOC().get();
+    const counts = doc.exists ? doc.data().prizeAwardCounts : null;
+    if (counts && typeof counts === "object" && Object.keys(counts).length > 0) {
+      return counts;
+    }
+    return this.rebuildPrizeAwardCounts();
+  },
+
+  /**
+   * Full scan — use after deploy or if aggregates drift (admin maintenance).
+   * @returns {Promise<Record<string, number>>}
+   */
+  async rebuildPrizeAwardCounts() {
+    const db = getDb();
+    const snap = await db.collection(COLLECTION).get();
     const counts = {};
 
-    snap.forEach((doc) => {
-      const { prize } = doc.data();
+    snap.forEach((d) => {
+      const { prize } = d.data();
       if (prize && prize !== "pending" && prize !== "Nothing") {
         counts[prize] = (counts[prize] || 0) + 1;
       }
     });
+
+    await AGGREGATES_DOC().set(
+      { prizeAwardCounts: counts, rebuiltAt: new Date() },
+      { merge: true }
+    );
 
     return counts;
   },
@@ -62,13 +126,13 @@ const SubmissionModel = {
    * Validate answers against Firestore questions, compute score server-side,
    * ignore any client-supplied prize/score. Uses a transaction for idempotency.
    *
-   * @param {{ sessionId: string, fullName: string, normalizedName: string, answers: number[], userAgent?: string }} data
+   * @param {{ sessionId: string, fullName: string, normalizedName: string, answers: number[], userAgent?: string, ip?: string }} data
    * @returns {Promise<Submission>}
    */
   async create(data) {
     const QuestionModel = require("./Question");
     const db = getDb();
-    const { sessionId, fullName, normalizedName, answers, userAgent } = data;
+    const { sessionId, fullName, normalizedName, answers, userAgent, ip } = data;
 
     const questions = await QuestionModel.findAll();
     if (!questions.length) {
@@ -135,6 +199,7 @@ const SubmissionModel = {
         prize,
         answers,
         userAgent: userAgent || "unknown",
+        ip: typeof ip === "string" ? ip : "unknown",
         status: prize === "pending" ? "pending" : "completed",
         submittedAt: now,
       };
@@ -159,15 +224,18 @@ const SubmissionModel = {
 
   /**
    * Atomically assign wheel prize when submission is still "pending".
+   * Increments `system/aggregates.prizeAwardCounts` when `isRealPrize` is true.
    * @param {string} sessionId
    * @param {string} prizeName
+   * @param {boolean} isRealPrize
    * @returns {Promise<{ finalized: boolean, previousPrize?: string }>}
    */
-  async finalizeSpinPrize(sessionId, prizeName) {
+  async finalizeSpinPrize(sessionId, prizeName, isRealPrize) {
     const db = getDb();
     const now = new Date();
     const submissionRef = db.collection(COLLECTION).doc(sessionId);
     const sessionRef = db.collection(SESSIONS_COLLECTION).doc(sessionId);
+    const statsRef = AGGREGATES_DOC();
 
     return db.runTransaction(async (t) => {
       const subSnap = await t.get(submissionRef);
@@ -195,6 +263,13 @@ const SubmissionModel = {
         },
         { merge: true }
       );
+
+      if (isRealPrize) {
+        const statsSnap = await t.get(statsRef);
+        const prev = statsSnap.exists ? statsSnap.data().prizeAwardCounts || {} : {};
+        const next = { ...prev, [prizeName]: (prev[prizeName] || 0) + 1 };
+        t.set(statsRef, { prizeAwardCounts: next, updatedAt: now }, { merge: true });
+      }
 
       return { finalized: true };
     });
