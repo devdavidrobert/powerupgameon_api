@@ -20,6 +20,35 @@ Firebase credentials: set `FIREBASE_SERVICE_ACCOUNT_JSON` in `.env` (single-line
 - Set **`REDIS_URL`** so registration, submission, spin, and global rate limits share counters across all API instances. If it is unset in production, the process logs a warning and limiters fall back to in-memory stores.
 - Set **`TRUST_PROXY=1`** (or `true`) when the API sits behind a reverse proxy or load balancer so client IPs and rate-limit keys use `X-Forwarded-For` correctly.
 
+### Change a user’s Auth email (Admin SDK)
+
+From `powerupgameon_api` with a populated `.env` (`FIREBASE_SERVICE_ACCOUNT_JSON`):
+
+```bash
+npm run auth:update-email -- <uid> <new-email@example.com>
+```
+
+- By default the script sets **`emailVerified: true`**. To leave the address unverified: add `--no-verify` **after** the email.
+- The new email must not already belong to another user in the project.
+
+### Grant or revoke admin custom claim (`admin: true`)
+
+The Next.js `/api/admin/session` route and Express `requireAdmin` accept either:
+
+- **`admin: true` on the Firebase ID token** (recommended for production), or  
+- **`ALLOWED_ADMIN_EMAILS`** on the Next app (and API) matching the signed-in email.
+
+If you see **`Admin access required.`** after login, either add your email to `ALLOWED_ADMIN_EMAILS` in `powerupgameon/.env` (comma-separated, restart Next), **or** grant the claim:
+
+```bash
+cd powerupgameon_api
+npm run auth:set-admin -- <uid> --grant
+```
+
+Then **sign out and sign in again** on the admin site so a new ID token includes the claim.
+
+To remove: `npm run auth:set-admin -- <uid> --revoke`.
+
 ---
 
 ## Project Structure
