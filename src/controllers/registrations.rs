@@ -128,12 +128,13 @@ pub async fn register(
         .unwrap_or("unknown")
         .to_string();
 
-    let (location_id, geo_status) = RegistrationModel::resolve_geo(
+    let geo_resolve = RegistrationModel::resolve_geo(
         &state,
         &ctx.paths,
         ctx.campaign.geo_enforcement,
         lat,
         lng,
+        &ip,
     )
     .await?;
 
@@ -148,8 +149,11 @@ pub async fn register(
             user_agent,
             lat,
             lng,
-            location_id,
-            geo_status,
+            location_id: geo_resolve.location_id,
+            geo_status: geo_resolve.geo_status,
+            ip_lat: geo_resolve.ip_lat,
+            ip_lng: geo_resolve.ip_lng,
+            ip_geo_status: geo_resolve.ip_geo_status,
         },
     )
     .await

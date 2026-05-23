@@ -153,6 +153,9 @@ In the Vercel project → **Settings → Environment Variables**, add the same v
 | `REDIS_URL` | `redis://host:port` (scheme required) |
 | `ALLOWED_ADMIN_EMAILS` | Comma-separated admin emails |
 | `REAL_PRIZE_LIMIT` | Optional, default `5` |
+| `IP_GEO_ENABLED` | `true`/`1` to cross-check GPS vs IP on registration (recommended in production) |
+| `IP_GEO_MAX_DISTANCE_KM` | Max km between GPS and IP coords when both resolve; default `150` |
+| `IP_GEO_API_URL` | Optional provider URL with `{ip}` placeholder; default uses ip-api.com |
 
 ### 3. Deploy
 

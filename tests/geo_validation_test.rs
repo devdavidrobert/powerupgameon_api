@@ -1,6 +1,8 @@
 use powerupgameon_api::features::campaigns::domain::GeoEnforcement;
-use powerupgameon_api::features::locations::application::GeoService;
-use powerupgameon_api::features::locations::domain::{GeoPoint, GeoValidationResult, Location};
+use powerupgameon_api::features::locations::application::{GeoService, IpGeoService};
+use powerupgameon_api::features::locations::domain::{
+    GeoPoint, GeoValidationResult, IpGeoCrossCheck, IpGeoLookup, Location,
+};
 
 fn nairobi_cbd() -> Location {
     Location {
@@ -68,4 +70,81 @@ fn geo_enforcement_modes_exist() {
 #[test]
 fn validate_coordinates_rejects_invalid_lat() {
     assert!(GeoService::validate_coordinates(91.0, 0.0).is_err());
+}
+
+#[test]
+fn gps_inside_ip_outside_is_mismatch() {
+    let gps = GeoPoint {
+        lat: -1.2864,
+        lng: 36.8172,
+    };
+    let gps_result = GeoValidationResult::Matched {
+        location_id: "nairobi".into(),
+    };
+    let ip_lookup = IpGeoLookup::Found(powerupgameon_api::features::locations::domain::IpGeoPoint {
+        lat: 0.0,
+        lng: 0.0,
+    });
+    assert_eq!(
+        IpGeoService::cross_check_gps_and_ip(
+            &gps,
+            &gps_result,
+            ip_lookup,
+            &[nairobi_cbd()],
+            150.0,
+        ),
+        IpGeoCrossCheck::Mismatch
+    );
+}
+
+#[test]
+fn gps_and_ip_nearby_passes() {
+    let gps = GeoPoint {
+        lat: -1.2864,
+        lng: 36.8172,
+    };
+    let gps_result = GeoValidationResult::Matched {
+        location_id: "nairobi".into(),
+    };
+    let ip_lookup = IpGeoLookup::Found(powerupgameon_api::features::locations::domain::IpGeoPoint {
+        lat: -1.2865,
+        lng: 36.8173,
+    });
+    assert_eq!(
+        IpGeoService::cross_check_gps_and_ip(
+            &gps,
+            &gps_result,
+            ip_lookup,
+            &[nairobi_cbd()],
+            150.0,
+        ),
+        IpGeoCrossCheck::Pass
+    );
+}
+
+#[test]
+fn private_ip_skips_cross_check() {
+    assert!(!IpGeoService::is_public_ip("127.0.0.1"));
+    assert!(!IpGeoService::is_public_ip("192.168.0.1"));
+}
+
+#[test]
+fn unavailable_ip_lookup_skips_cross_check() {
+    let gps = GeoPoint {
+        lat: -1.2864,
+        lng: 36.8172,
+    };
+    let gps_result = GeoValidationResult::Matched {
+        location_id: "nairobi".into(),
+    };
+    assert_eq!(
+        IpGeoService::cross_check_gps_and_ip(
+            &gps,
+            &gps_result,
+            IpGeoLookup::Unavailable,
+            &[nairobi_cbd()],
+            150.0,
+        ),
+        IpGeoCrossCheck::Skipped
+    );
 }

@@ -21,6 +21,9 @@ pub fn test_config() -> Config {
         spin_token_secret: "test-spin-secret".into(),
         redis_url: None,
         allowed_admin_emails: vec!["admin@example.com".into()],
+        ip_geo_enabled: false,
+        ip_geo_max_distance_km: 150.0,
+        ip_geo_api_url: None,
     }
 }
 

@@ -8,7 +8,7 @@ use crate::models::submission::{SubmissionCreateInput, SubmissionModel};
 use crate::utils::challenge_window::assert_challenge_open_for_campaign;
 use crate::utils::client_ip::get_client_ip;
 use crate::utils::firestore::serialize_doc_data;
-use crate::utils::helpers::{decode_cursor, encode_cursor, normalize_name};
+use crate::utils::helpers::{decode_cursor, encode_cursor, submission_identity_from_registration};
 use crate::utils::spin_token::mint_spin_token;
 use axum::{
     extract::{Path, Query, State},
@@ -102,23 +102,9 @@ pub async fn create_submission(
         .as_deref()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::bad_request("sessionId is required."))?;
-    let full_name = body
-        .full_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::bad_request("fullName is required."))?;
     let answers_raw = body
         .answers
         .ok_or_else(|| ApiError::bad_request("answers must be an array of option indices."))?;
-
-    let normalized = body
-        .normalized_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(normalize_name)
-        .unwrap_or_else(|| normalize_name(full_name));
 
     let mut sanitized = Vec::new();
     for raw in answers_raw {
@@ -138,6 +124,8 @@ pub async fn create_submission(
     let registration = RegistrationModel::find_by_id(&state, &ctx.paths, session_id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Registration not found for this session."))?;
+
+    let (full_name, normalized) = submission_identity_from_registration(&registration)?;
 
     let location_id = registration
         .get("locationId")

@@ -2,9 +2,11 @@ use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::domain::GeoEnforcement;
 use crate::features::campaigns::infrastructure::CampaignPaths;
-use crate::features::locations::application::GeoService;
-use crate::features::locations::domain::{GeoPoint, GeoStatus, GeoValidationResult};
-use crate::features::locations::infrastructure::LocationRepository;
+use crate::features::locations::application::{GeoService, IpGeoService};
+use crate::features::locations::domain::{
+    GeoPoint, GeoStatus, GeoValidationResult, IpGeoCrossCheck, IpGeoLookup,
+};
+use crate::features::locations::infrastructure::{IpApiProvider, LocationRepository};
 use crate::utils::firestore::millis_now;
 use firestore::errors::{
     BackoffError, FirestoreError, FirestoreInvalidParametersError,
@@ -30,6 +32,17 @@ pub struct RegistrationInput {
     pub lng: f64,
     pub location_id: Option<String>,
     pub geo_status: GeoStatus,
+    pub ip_lat: Option<f64>,
+    pub ip_lng: Option<f64>,
+    pub ip_geo_status: Option<String>,
+}
+
+pub struct GeoResolveOutput {
+    pub location_id: Option<String>,
+    pub geo_status: GeoStatus,
+    pub ip_lat: Option<f64>,
+    pub ip_lng: Option<f64>,
+    pub ip_geo_status: Option<String>,
 }
 
 impl RegistrationModel {
@@ -88,16 +101,19 @@ impl RegistrationModel {
         geo_enforcement: GeoEnforcement,
         lat: f64,
         lng: f64,
-    ) -> ApiResult<(Option<String>, GeoStatus)> {
+        client_ip: &str,
+    ) -> ApiResult<GeoResolveOutput> {
         GeoService::validate_coordinates(lat, lng).map_err(ApiError::bad_request)?;
 
         let locations = LocationRepository::find_all(state, paths).await?;
         let point = GeoPoint { lat, lng };
-        match GeoService::resolve_location(&point, &locations) {
+        let gps_result = GeoService::resolve_location(&point, &locations);
+
+        let (location_id, geo_status) = match &gps_result {
             GeoValidationResult::Matched { location_id } => {
-                Ok((Some(location_id), GeoStatus::Valid))
+                (Some(location_id.clone()), GeoStatus::Valid)
             }
-            GeoValidationResult::NoZonesConfigured => Ok((None, GeoStatus::NoZones)),
+            GeoValidationResult::NoZonesConfigured => (None, GeoStatus::NoZones),
             GeoValidationResult::OutsideZones => {
                 if geo_enforcement == GeoEnforcement::Reject {
                     return Err(ApiError::with_code(
@@ -106,9 +122,66 @@ impl RegistrationModel {
                         "You are outside the allowed participation zones for this campaign.",
                     ));
                 }
-                Ok((None, GeoStatus::Outside))
+                (None, GeoStatus::Outside)
+            }
+        };
+
+        let mut ip_lat = None;
+        let mut ip_lng = None;
+        let mut ip_geo_status = None;
+
+        let has_enabled_zones = locations.iter().any(|l| l.enabled);
+        if state.config.ip_geo_enabled
+            && has_enabled_zones
+            && IpGeoService::is_public_ip(client_ip)
+        {
+            let ip_lookup =
+                IpApiProvider::lookup(client_ip, state.config.ip_geo_api_url.as_deref()).await;
+
+            if let Some(coords) = match &ip_lookup {
+                IpGeoLookup::Found(p) => Some(*p),
+                _ => None,
+            } {
+                ip_lat = Some(coords.lat);
+                ip_lng = Some(coords.lng);
+            }
+
+            match IpGeoService::cross_check_gps_and_ip(
+                &point,
+                &gps_result,
+                ip_lookup,
+                &locations,
+                state.config.ip_geo_max_distance_km,
+            ) {
+                IpGeoCrossCheck::Pass => {
+                    ip_geo_status = Some("ok".into());
+                }
+                IpGeoCrossCheck::Skipped => {
+                    tracing::warn!(
+                        client_ip = %client_ip,
+                        "ip_geo_check_skipped"
+                    );
+                }
+                IpGeoCrossCheck::Mismatch => {
+                    ip_geo_status = Some("mismatch".into());
+                    if geo_enforcement == GeoEnforcement::Reject {
+                        return Err(ApiError::with_code(
+                            axum::http::StatusCode::FORBIDDEN,
+                            "GEO_IP_MISMATCH",
+                            "Your location could not be verified. Please disable VPN or location spoofing and try again.",
+                        ));
+                    }
+                }
             }
         }
+
+        Ok(GeoResolveOutput {
+            location_id,
+            geo_status,
+            ip_lat,
+            ip_lng,
+            ip_geo_status,
+        })
     }
 
     pub async fn register(
@@ -129,6 +202,9 @@ impl RegistrationModel {
         let geo_status = input.geo_status.as_str().to_string();
         let lat = input.lat;
         let lng = input.lng;
+        let ip_lat = input.ip_lat;
+        let ip_lng = input.ip_lng;
+        let ip_geo_status = input.ip_geo_status.clone();
 
         db.run_transaction(move |db, transaction| {
             register_tx(
@@ -146,6 +222,9 @@ impl RegistrationModel {
                 geo_status.clone(),
                 lat,
                 lng,
+                ip_lat,
+                ip_lng,
+                ip_geo_status.clone(),
             )
         })
         .await
@@ -195,6 +274,9 @@ fn register_tx<'b>(
     geo_status: String,
     lat: f64,
     lng: f64,
+    ip_lat: Option<f64>,
+    ip_lng: Option<f64>,
+    ip_geo_status: Option<String>,
 ) -> Pin<Box<dyn Future<Output = Result<(), BackoffError<FirestoreError>>> + Send + 'b>> {
     Box::pin(async move {
         let name_doc: Option<Map<String, Value>> = db
@@ -285,6 +367,9 @@ fn register_tx<'b>(
                 "lat": lat,
                 "lng": lng,
                 "geoStatus": geo_status,
+                "ipLat": ip_lat,
+                "ipLng": ip_lng,
+                "ipGeoStatus": ip_geo_status,
             }))
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;

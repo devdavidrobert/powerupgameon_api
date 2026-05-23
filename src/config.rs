@@ -18,6 +18,9 @@ pub struct Config {
     pub spin_token_secret: String,
     pub redis_url: Option<String>,
     pub allowed_admin_emails: Vec<String>,
+    pub ip_geo_enabled: bool,
+    pub ip_geo_max_distance_km: f64,
+    pub ip_geo_api_url: Option<String>,
 }
 
 impl Config {
@@ -100,6 +103,20 @@ impl Config {
             .parse()
             .context("PORT must be a valid number")?;
 
+        let ip_geo_enabled = matches!(
+            env::var("IP_GEO_ENABLED").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        );
+
+        let ip_geo_max_distance_km = env::var("IP_GEO_MAX_DISTANCE_KM")
+            .unwrap_or_else(|_| "150".into())
+            .parse()
+            .unwrap_or(150.0);
+
+        let ip_geo_api_url = env::var("IP_GEO_API_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+
         Ok(Self {
             port,
             node_env,
@@ -116,6 +133,9 @@ impl Config {
             spin_token_secret,
             redis_url,
             allowed_admin_emails,
+            ip_geo_enabled,
+            ip_geo_max_distance_km,
+            ip_geo_api_url,
         })
     }
 
