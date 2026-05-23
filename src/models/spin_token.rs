@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::utils::firestore::millis_now;
+use firestore::errors::FirestoreError;
 use serde_json::{json, Map, Value};
 
 const COLLECTION: &str = "spin_tokens";
@@ -28,10 +29,6 @@ impl SpinTokenModel {
         fingerprint: &str,
         session_id: &str,
     ) -> ApiResult<bool> {
-        if Self::is_consumed(state, fingerprint).await? {
-            return Ok(false);
-        }
-
         let now = millis_now();
         let payload = json!({
             "sessionId": session_id,
@@ -43,17 +40,15 @@ impl SpinTokenModel {
             .db
             .client
             .fluent()
-            .update()
-            .in_col(COLLECTION)
+            .insert()
+            .into(COLLECTION)
             .document_id(fingerprint)
             .object(&payload)
             .execute::<Map<String, Value>>()
             .await
         {
             Ok(_) => Ok(true),
-            Err(err) if err.to_string().contains("ALREADY_EXISTS") || err.to_string().contains("exists") => {
-                Ok(false)
-            }
+            Err(FirestoreError::DataConflictError(_)) => Ok(false),
             Err(err) => Err(ApiError::Internal(err.into())),
         }
     }

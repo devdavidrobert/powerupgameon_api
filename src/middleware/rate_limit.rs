@@ -1,5 +1,7 @@
 use crate::app_state::AppState;
+use crate::config::Config;
 use crate::error::json_error;
+use crate::utils::spin_token::verify_spin_token;
 use axum::{
     body::Body,
     extract::State,
@@ -10,8 +12,11 @@ use axum::{
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use redis::AsyncCommands;
+use serde::Deserialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+const SPIN_BODY_LIMIT: usize = 16 * 1024;
 
 static MEMORY_STORE: Lazy<DashMap<String, (u32, Instant)>> = Lazy::new(DashMap::new);
 
@@ -153,6 +158,23 @@ pub async fn submission_rate_limit_middleware(
     next.run(req).await
 }
 
+#[derive(Deserialize)]
+struct SpinRateLimitBody {
+    #[serde(rename = "spinToken")]
+    spin_token: Option<String>,
+}
+
+pub fn spin_rate_limit_key(config: &Config, ip: &str, body: &[u8]) -> String {
+    let sid = extract_spin_session_id(config, body).unwrap_or_else(|| "na".into());
+    format!("{ip}:{sid}")
+}
+
+fn extract_spin_session_id(config: &Config, body: &[u8]) -> Option<String> {
+    let parsed: SpinRateLimitBody = serde_json::from_slice(body).ok()?;
+    let token = parsed.spin_token.filter(|s| !s.is_empty())?;
+    verify_spin_token(config, &token).ok()
+}
+
 pub async fn spin_rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -163,14 +185,19 @@ pub async fn spin_rate_limit_middleware(
         state.config.trust_proxy,
         "unknown",
     );
-    let sid = if let Some(body) = req.extensions().get::<String>() {
-        body.clone()
-    } else {
-        "na".into()
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, SPIN_BODY_LIMIT).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "Unable to read spin request body.",
+            )
+        }
     };
-    let key = format!("{ip}:{sid}");
+    let key = spin_rate_limit_key(&state.config, &ip, &bytes);
     if let Err(resp) = check_rate_limit(&state, &key, &SPIN_RULE).await {
         return resp;
     }
-    next.run(req).await
+    next.run(Request::from_parts(parts, Body::from(bytes))).await
 }

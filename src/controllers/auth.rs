@@ -45,15 +45,15 @@ pub async fn create_session(
         .create_session_cookie(&id_token, expires_in)
         .await?;
 
-    let secure = if state.config.is_production { "; Secure" } else { "" };
-    let cookie_header = format!(
-        "__session={session_cookie}; HttpOnly; Path=/; SameSite=Strict; Max-Age={}{secure}",
-        expires_in / 1000
-    );
+    let set_cookie = build_set_cookie_header_value(
+        &session_cookie,
+        expires_in / 1000,
+        state.config.is_production,
+    )?;
 
     Ok((
         StatusCode::OK,
-        [(header::SET_COOKIE, HeaderValue::from_str(&cookie_header).unwrap())],
+        [(header::SET_COOKIE, set_cookie)],
         Json(SuccessResponse::<serde_json::Value> {
             success: true,
             data: None,
@@ -63,4 +63,22 @@ pub async fn create_session(
             has_more: None,
         }),
     ))
+}
+
+pub fn build_set_cookie_header_value(
+    session_cookie: &str,
+    expires_in_secs: u64,
+    secure: bool,
+) -> ApiResult<HeaderValue> {
+    let secure_suffix = if secure { "; Secure" } else { "" };
+    let cookie_header = format!(
+        "__session={session_cookie}; HttpOnly; Path=/; SameSite=Strict; Max-Age={expires_in_secs}{secure_suffix}"
+    );
+    HeaderValue::from_str(&cookie_header).map_err(|_| {
+        ApiError::with_code(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "SESSION_COOKIE_INVALID",
+            "Unable to create session cookie.",
+        )
+    })
 }

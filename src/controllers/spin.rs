@@ -45,23 +45,6 @@ pub async fn spin_wheel(
 
     let fingerprint = hex::encode(Sha256::digest(spin_token.as_bytes()));
 
-    if SpinTokenModel::is_consumed(&state, &fingerprint).await? {
-        logger::log(
-            &state.config,
-            "warn",
-            "spin_token_replay_attempt",
-            json!({
-                "requestId": ctx.request_id,
-                "sessionIdPrefix": &session_id[..session_id.len().min(10)],
-            }),
-        );
-        return Err(ApiError::with_code(
-            axum::http::StatusCode::CONFLICT,
-            "SPIN_TOKEN_ALREADY_USED",
-            "This spin token has already been used.",
-        ));
-    }
-
     let existing = SubmissionModel::find_by_id(&state, &session_id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Submission not found for this session."))?;
@@ -87,6 +70,15 @@ pub async fn spin_wheel(
     }
 
     if !SpinTokenModel::consume_if_fresh(&state, &fingerprint, &session_id).await? {
+        logger::log(
+            &state.config,
+            "warn",
+            "spin_token_replay_attempt",
+            json!({
+                "requestId": ctx.request_id,
+                "sessionIdPrefix": &session_id[..session_id.len().min(10)],
+            }),
+        );
         return Err(ApiError::with_code(
             axum::http::StatusCode::CONFLICT,
             "SPIN_TOKEN_ALREADY_USED",
