@@ -18,16 +18,14 @@ static APP: OnceCell<Router> = OnceCell::const_new();
 
 /// Build the Axum router once per serverless instance (or per long-running process).
 pub async fn build_app() -> anyhow::Result<Router> {
-    if let Some(router) = APP.get() {
-        return Ok(router.clone());
-    }
-
-    init_crypto_providers()?;
-    let config = config::Config::load()?;
-    let state = AppState::new(config).await?;
-    let router = routes::build_router(state);
-    let _ = APP.set(router.clone());
-    Ok(router)
+    APP.get_or_try_init(|| async {
+        init_crypto_providers()?;
+        let config = config::Config::load()?;
+        let state = AppState::new(config).await?;
+        Ok(routes::build_router(state))
+    })
+    .await
+    .map(|router| router.clone())
 }
 
 /// Install TLS/JWT crypto providers required by Firestore (gcloud-sdk) before any network I/O.
