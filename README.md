@@ -54,8 +54,10 @@ To remove: `cargo run --bin set-auth-admin-claim -- <uid> --revoke`.
 ## Project structure
 
 ```
+api/
+├── main.rs                  # Vercel serverless entry (Axum + vercel_runtime)
 src/
-├── main.rs                  # Server entry
+├── main.rs                  # Long-running server entry (Render, Railway, local)
 ├── lib.rs                   # Library crate (routes, models, middleware)
 ├── config.rs                # Environment configuration
 ├── routes.rs                # Axum router + middleware stack
@@ -94,4 +96,65 @@ GET /api/csrf-token
 ```
 
 Default port: **4000** (`PORT` env var).
+
+---
+
+## Deploy to Vercel
+
+This repo supports Vercel’s official [Rust + Axum runtime](https://vercel.com/docs/functions/runtimes/rust). All routes are served by a single serverless function (`api/main.rs`) with a catch-all rewrite.
+
+### 1. Create a Vercel project
+
+Connect the **`powerupgameon_api`** Git repository as its own Vercel project (separate from the Next.js frontend).
+
+### 2. Environment variables
+
+In the Vercel project → **Settings → Environment Variables**, add the same values as `.env`:
+
+| Variable | Notes |
+|----------|--------|
+| `NODE_ENV` | `production` |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Single-line JSON string |
+| `FIREBASE_PROJECT_ID` | e.g. `powerupgameon` |
+| `ALLOWED_ORIGINS` | Comma-separated frontend URLs |
+| `API_CSRF_SECRET` | Long random secret |
+| `SPIN_TOKEN_SECRET` | Different long random secret |
+| `TRUST_PROXY` | `1` |
+| `REDIS_URL` | `redis://host:port` (scheme required) |
+| `ALLOWED_ADMIN_EMAILS` | Comma-separated admin emails |
+| `REAL_PRIZE_LIMIT` | Optional, default `5` |
+
+### 3. Deploy
+
+```bash
+npx vercel            # first deploy (link project) — no global install needed
+npx vercel --prod     # production deploy
+```
+
+If you prefer a global install and get `EACCES`, use `npx` as above instead of `sudo npm i -g vercel`.
+
+Or push to the connected Git branch for automatic deploys.
+
+### 4. Point the frontend at the new API
+
+Set `NEXT_PUBLIC_API_URL` on the Next.js Vercel project to your API URL, e.g.:
+
+```
+https://your-api-project.vercel.app/api
+```
+
+### Local Vercel dev
+
+```bash
+vercel dev
+```
+
+Uses `.env` locally. The Axum app is cached per serverless instance after the first request (Firestore + Redis connections are reused).
+
+### Notes
+
+- **`maxDuration`** is set to 60s in `vercel.json` (Pro plan). Hobby tier caps at 10s.
+- First request after idle may be slow (Rust compile + Firestore cold start).
+- **`REDIS_URL` is strongly recommended** on Vercel so rate limits work across function instances.
+- Long-running servers (Render, Railway, etc.) still use `cargo run` / `src/main.rs`.
 @

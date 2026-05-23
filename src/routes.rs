@@ -64,27 +64,27 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     let api_questions = Router::new()
         .route("/", get(questions::get_all_questions))
-        .route("/:id", get(questions::get_question))
+        .route("/{id}", get(questions::get_question))
         .merge(with_admin(
             admin.clone(),
             Router::new()
                 .route("/admin/full", get(questions::get_all_questions_admin))
                 .route("/", post(questions::create_question))
                 .route(
-                    "/:id",
+                    "/{id}",
                     put(questions::update_question).delete(questions::delete_question),
                 ),
         ));
 
     let api_prizes = Router::new()
         .route("/", get(prizes::get_all_prizes))
-        .route("/:id", get(prizes::get_prize))
+        .route("/{id}", get(prizes::get_prize))
         .merge(with_admin(
             admin.clone(),
             Router::new()
                 .route("/", post(prizes::create_prize))
                 .route(
-                    "/:id",
+                    "/{id}",
                     put(prizes::update_prize).delete(prizes::delete_prize),
                 ),
         ));
@@ -101,7 +101,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             admin.clone(),
             Router::new()
                 .route("/", get(registrations::get_all_registrations))
-                .route("/:id", delete(registrations::delete_registration)),
+                .route("/{id}", delete(registrations::delete_registration)),
         ));
 
     let api_submissions = Router::new()
@@ -117,7 +117,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             Router::new()
                 .route("/", get(submissions::get_all_submissions))
                 .route(
-                    "/:id",
+                    "/{id}",
                     get(submissions::get_submission).delete(submissions::delete_submission),
                 ),
         ));
@@ -144,8 +144,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         admin,
         Router::new()
             .route("/", get(raffles::get_all_raffles).post(raffles::create_raffle))
-            .route("/:raffle_id/winners", get(raffles::get_raffle_winners))
-            .route("/winners/:winner_id", patch(raffles::update_winner_gift_status)),
+            .route("/{raffle_id}/winners", get(raffles::get_raffle_winners))
+            .route("/winners/{winner_id}", patch(raffles::update_winner_gift_status)),
     );
 
     let api_auth = Router::new()

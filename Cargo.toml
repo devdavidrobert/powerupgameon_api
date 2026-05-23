@@ -13,11 +13,11 @@ name = "powerupgameon-api"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.7", features = ["json", "macros"] }
-axum-extra = { version = "0.9", features = ["cookie"] }
+axum = { version = "0.8", features = ["json", "macros"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
 tokio = { version = "1", features = ["full"] }
-tower = { version = "0.4" }
-tower-http = { version = "0.5", features = ["cors", "trace", "limit", "set-header"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors", "trace", "limit", "set-header"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -43,13 +43,23 @@ async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 rustls = { version = "0.23", features = ["ring"] }
 jsonwebtoken-v10 = { package = "jsonwebtoken", version = "10", features = ["aws_lc_rs"] }
+vercel_runtime = { version = "2", features = ["axum"] }
+
+[[bin]]
+name = "main"
+path = "api/main.rs"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
 
 [dev-dependencies]
 tokio-test = "0.4"
 base64 = "0.22"
 ring = "0.17"
 serde_json = "1"
-axum = "0.7"
+axum = "0.8"
 
 [[bin]]
 name = "set-auth-admin-claim"

@@ -3,6 +3,7 @@ use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::models::question::QuestionModel;
 use axum::{
     extract::{Path, State},
+    http::{header, HeaderMap},
     Json,
 };
 use serde::Deserialize;
@@ -14,12 +15,24 @@ fn to_public(mut doc: Map<String, Value>) -> Map<String, Value> {
     doc
 }
 
+fn public_cache_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        "public, max-age=30, stale-while-revalidate=120"
+            .parse()
+            .unwrap(),
+    );
+    headers
+}
+
 pub async fn get_all_questions(
     State(state): State<Arc<AppState>>,
-) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
+) -> ApiResult<(HeaderMap, Json<SuccessResponse<Vec<Map<String, Value>>>>)> {
     let questions = QuestionModel::find_all(&state).await?;
-    Ok(SuccessResponse::data(
-        questions.into_iter().map(to_public).collect(),
+    Ok((
+        public_cache_headers(),
+        SuccessResponse::data(questions.into_iter().map(to_public).collect()),
     ))
 }
 
@@ -32,11 +45,11 @@ pub async fn get_all_questions_admin(
 pub async fn get_question(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
+) -> ApiResult<(HeaderMap, Json<SuccessResponse<Map<String, Value>>>)> {
     let question = QuestionModel::find_by_id(&state, &id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Question not found."))?;
-    Ok(SuccessResponse::data(to_public(question)))
+    Ok((public_cache_headers(), SuccessResponse::data(to_public(question))))
 }
 
 #[derive(Deserialize)]
