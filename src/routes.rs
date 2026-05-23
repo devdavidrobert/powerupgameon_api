@@ -1,0 +1,202 @@
+use crate::app_state::AppState;
+use crate::controllers::{
+    auth, prizes, questions, raffles, registrations, settings, spin, submissions,
+};
+use crate::error::{json_error, SuccessResponse};
+use crate::middleware::auth::{authenticate_middleware, require_admin_middleware};
+use crate::middleware::csrf::{mint_csrf_token, require_csrf_middleware};
+use crate::middleware::rate_limit::{
+    global_rate_limit_middleware, registration_rate_limit_middleware,
+    submission_rate_limit_middleware, spin_rate_limit_middleware,
+};
+use crate::middleware::request_context::request_context_middleware;
+use axum::{
+    extract::State,
+    http::{HeaderValue, Method, StatusCode},
+    middleware,
+    response::IntoResponse,
+    routing::{delete, get, patch, post, put},
+    Json, Router,
+};
+use std::sync::Arc;
+use tower_http::cors::CorsLayer;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
+use tower_http::trace::TraceLayer;
+
+fn with_admin(state: Arc<AppState>, router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            authenticate_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(state, require_admin_middleware))
+}
+
+pub fn build_router(state: Arc<AppState>) -> Router {
+    let cors_state = state.clone();
+    let cors = CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderName::from_static("x-csrf-token"),
+            axum::http::HeaderName::from_static("x-request-id"),
+        ])
+        .allow_credentials(true)
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            move |origin: &HeaderValue, _| {
+                let Ok(origin_str) = origin.to_str() else {
+                    return false;
+                };
+                cors_state.config.allowed_origins.contains(&origin_str.to_string())
+            },
+        ));
+
+    let admin = state.clone();
+
+    let api_questions = Router::new()
+        .route("/", get(questions::get_all_questions))
+        .route("/:id", get(questions::get_question))
+        .merge(with_admin(
+            admin.clone(),
+            Router::new()
+                .route("/admin/full", get(questions::get_all_questions_admin))
+                .route("/", post(questions::create_question))
+                .route(
+                    "/:id",
+                    put(questions::update_question).delete(questions::delete_question),
+                ),
+        ));
+
+    let api_prizes = Router::new()
+        .route("/", get(prizes::get_all_prizes))
+        .route("/:id", get(prizes::get_prize))
+        .merge(with_admin(
+            admin.clone(),
+            Router::new()
+                .route("/", post(prizes::create_prize))
+                .route(
+                    "/:id",
+                    put(prizes::update_prize).delete(prizes::delete_prize),
+                ),
+        ));
+
+    let api_registrations = Router::new()
+        .route(
+            "/",
+            post(registrations::register).layer(middleware::from_fn_with_state(
+                state.clone(),
+                registration_rate_limit_middleware,
+            )),
+        )
+        .merge(with_admin(
+            admin.clone(),
+            Router::new()
+                .route("/", get(registrations::get_all_registrations))
+                .route("/:id", delete(registrations::delete_registration)),
+        ));
+
+    let api_submissions = Router::new()
+        .route(
+            "/",
+            post(submissions::create_submission).layer(middleware::from_fn_with_state(
+                state.clone(),
+                submission_rate_limit_middleware,
+            )),
+        )
+        .merge(with_admin(
+            admin.clone(),
+            Router::new()
+                .route("/", get(submissions::get_all_submissions))
+                .route(
+                    "/:id",
+                    get(submissions::get_submission).delete(submissions::delete_submission),
+                ),
+        ));
+
+    let api_spin = Router::new()
+        .route(
+            "/",
+            post(spin::spin_wheel).layer(middleware::from_fn_with_state(
+                state.clone(),
+                spin_rate_limit_middleware,
+            )),
+        );
+
+    let api_settings = Router::new()
+        .route("/", get(settings::get_settings))
+        .merge(with_admin(
+            admin.clone(),
+            Router::new()
+                .route("/", put(settings::update_settings))
+                .route("/timers", delete(settings::clear_timers)),
+        ));
+
+    let api_raffles = with_admin(
+        admin,
+        Router::new()
+            .route("/", get(raffles::get_all_raffles).post(raffles::create_raffle))
+            .route("/:raffle_id/winners", get(raffles::get_raffle_winners))
+            .route("/winners/:winner_id", patch(raffles::update_winner_gift_status)),
+    );
+
+    let api_auth = Router::new()
+        .route("/verify", post(auth::verify_token))
+        .route("/session", post(auth::create_session));
+
+    let csrf = |router: Router<Arc<AppState>>| {
+        router.layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_csrf_middleware,
+        ))
+    };
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/api/csrf-token", get(csrf_token))
+        .nest("/api/auth", csrf(api_auth))
+        .nest("/api/questions", csrf(api_questions))
+        .nest("/api/prizes", csrf(api_prizes))
+        .nest("/api/registrations", csrf(api_registrations))
+        .nest("/api/submissions", csrf(api_submissions))
+        .nest("/api/spin", csrf(api_spin))
+        .nest("/api/settings", csrf(api_settings))
+        .nest("/api/raffles", csrf(api_raffles))
+        .fallback(|| async { json_error(StatusCode::NOT_FOUND, "Route not found.") })
+        .layer(middleware::from_fn_with_state(state.clone(), global_rate_limit_middleware))
+        .layer(middleware::from_fn(request_context_middleware))
+        .layer(RequestBodyLimitLayer::new(256 * 1024))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            axum::http::header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            axum::http::header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(TraceLayer::new_for_http())
+        .layer(cors)
+        .with_state(state)
+}
+
+async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+async fn csrf_token(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    match mint_csrf_token(&state.config) {
+        Ok(token) => SuccessResponse::data(serde_json::json!({ "csrfToken": token })).into_response(),
+        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+}
