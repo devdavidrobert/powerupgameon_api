@@ -36,3 +36,9 @@ fn validate_challenge_window_allows_valid_range() {
     payload.insert("challengeEndTime".into(), json!(2000));
     assert!(validate_challenge_window(&payload).is_ok());
 }
+
+#[test]
+fn parse_challenge_time_accepts_float_whole_number() {
+    let parsed = parse_challenge_time_value(&json!(1779649200000f64)).unwrap();
+    assert_eq!(parsed.as_i64(), Some(1779649200000));
+}

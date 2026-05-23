@@ -1,13 +1,18 @@
-use powerupgameon_api::features::campaigns::domain::{Campaign, CampaignStatus, GeoEnforcement, StaggerMode};
+use powerupgameon_api::features::campaigns::presentation::extract_slug_from_path;
 
 #[test]
 fn slug_extraction_from_nested_paths() {
-    let path = "/api/campaigns/summer-2026/questions";
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let pos = segments.iter().position(|&s| s == "campaigns").unwrap();
-    let slug = segments.get(pos + 1).unwrap();
-    assert_eq!(*slug, "summer-2026");
+    assert_eq!(
+        extract_slug_from_path("/api/campaigns/summer-2026/questions").unwrap(),
+        "summer-2026"
+    );
+    assert_eq!(
+        extract_slug_from_path("/api/campaigns/test2/settings").unwrap(),
+        "test2"
+    );
 }
+
+use powerupgameon_api::features::campaigns::domain::{Campaign, CampaignStatus, GeoEnforcement, StaggerMode};
 
 #[test]
 fn draft_campaign_is_not_publicly_accessible() {

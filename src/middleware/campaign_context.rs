@@ -2,26 +2,28 @@ use crate::app_state::AppState;
 use crate::error::ApiResult;
 use crate::features::campaigns::application::CampaignService;
 use crate::features::campaigns::infrastructure::CampaignPaths;
-use crate::features::campaigns::presentation::{CampaignContext, SlugPath};
+use crate::features::campaigns::presentation::{resolve_campaign_slug, CampaignContext};
 use axum::{
-    extract::{Path, State},
+    extract::{Request, State},
     middleware::Next,
     response::Response,
 };
 use std::sync::Arc;
 
-/// Resolves `{slug}` from Axum route params and stores `CampaignContext` on the request.
-/// Required on Vercel: `uri.path()` is rewritten to `/api/main`, so parsing the URI fails.
+/// Resolves the campaign slug from the request path and stores `CampaignContext`.
+/// Handlers also fall back to path parsing when this middleware did not run.
 pub async fn inject_campaign_context(
     State(state): State<Arc<AppState>>,
-    Path(slug_path): Path<SlugPath>,
-    mut req: axum::extract::Request,
+    mut req: Request,
     next: Next,
 ) -> ApiResult<Response> {
-    let campaign = CampaignService::resolve_by_slug(&state, &slug_path.slug).await?;
-    req.extensions_mut().insert(CampaignContext {
-        paths: CampaignPaths::new(campaign.id.clone()),
-        campaign,
-    });
+    if req.extensions().get::<CampaignContext>().is_none() {
+        let slug = resolve_campaign_slug(req.uri().path(), req.headers())?;
+        let campaign = CampaignService::resolve_by_slug(&state, &slug).await?;
+        req.extensions_mut().insert(CampaignContext {
+            paths: CampaignPaths::new(campaign.id.clone()),
+            campaign,
+        });
+    }
     Ok(next.run(req).await)
 }

@@ -283,10 +283,18 @@ pub fn parse_challenge_time_value(value: &Value) -> ApiResult<Value> {
     match value {
         Value::Null => Ok(Value::Null),
         Value::Number(n) => {
-            let ms = n
-                .as_i64()
-                .ok_or_else(|| ApiError::bad_request("Invalid challenge time."))?;
-            Ok(json!(ms))
+            if let Some(ms) = n.as_i64() {
+                return Ok(json!(ms));
+            }
+            if let Some(ms) = n.as_u64() {
+                return Ok(json!(ms as i64));
+            }
+            if let Some(f) = n.as_f64() {
+                if f.is_finite() && f >= 0.0 {
+                    return Ok(json!(f.round() as i64));
+                }
+            }
+            Err(ApiError::bad_request("Invalid challenge time."))
         }
         Value::String(s) => {
             let trimmed = s.trim();

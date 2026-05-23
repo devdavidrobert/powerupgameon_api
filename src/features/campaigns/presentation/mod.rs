@@ -1,5 +1,7 @@
 mod campaign_context;
 mod campaigns_controller;
 
-pub use campaign_context::{CampaignContext, PublicCampaignContext, SlugPath};
+pub use campaign_context::{
+    extract_slug_from_path, resolve_campaign_slug, CampaignContext, PublicCampaignContext, SlugPath,
+};
 pub use campaigns_controller::*;

@@ -5,7 +5,7 @@ use crate::features::campaigns::domain::Campaign;
 use crate::features::campaigns::infrastructure::CampaignPaths;
 use axum::{
     extract::{FromRef, FromRequestParts},
-    http::{request::Parts, StatusCode},
+    http::{header::HeaderMap, request::Parts, StatusCode},
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -38,10 +38,20 @@ where
 
     fn from_request_parts(
         parts: &mut Parts,
-        _state: &S,
+        state: &S,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        let cached = parts.extensions.get::<CampaignContext>().cloned();
+        let path = parts.uri.path().to_string();
+        let headers = parts.headers.clone();
+        let state = Arc::<AppState>::from_ref(state);
+
         async move {
-            let ctx = campaign_context_from_parts(parts)?;
+            let ctx = if let Some(ctx) = cached {
+                ctx
+            } else {
+                load_campaign_context(&path, &headers, &state).await?
+            };
+
             if !ctx.campaign.is_publicly_accessible() {
                 return Err(ApiError::with_code(
                     StatusCode::FORBIDDEN,
@@ -63,18 +73,63 @@ where
 
     fn from_request_parts(
         parts: &mut Parts,
-        _state: &S,
+        state: &S,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        async move { campaign_context_from_parts(parts) }
+        let cached = parts.extensions.get::<CampaignContext>().cloned();
+        let path = parts.uri.path().to_string();
+        let headers = parts.headers.clone();
+        let state = Arc::<AppState>::from_ref(state);
+
+        async move {
+            if let Some(ctx) = cached {
+                Ok(ctx)
+            } else {
+                load_campaign_context(&path, &headers, &state).await
+            }
+        }
     }
 }
 
-fn campaign_context_from_parts(parts: &Parts) -> Result<CampaignContext, ApiError> {
-    parts
-        .extensions
-        .get::<CampaignContext>()
-        .cloned()
-        .ok_or_else(|| ApiError::bad_request("Campaign slug missing from path."))
+pub fn extract_slug_from_path(path: &str) -> ApiResult<String> {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if let Some(pos) = segments.iter().position(|&s| s == "campaigns") {
+        if let Some(slug) = segments.get(pos + 1) {
+            if *slug != "csrf-token" && !slug.is_empty() {
+                return Ok(slug.to_string());
+            }
+        }
+    }
+    Err(ApiError::bad_request("Campaign slug missing from path."))
+}
+
+pub fn resolve_campaign_slug(path: &str, headers: &HeaderMap) -> ApiResult<String> {
+    if let Ok(slug) = extract_slug_from_path(path) {
+        return Ok(slug);
+    }
+
+    for header in ["x-invoke-path", "x-original-url", "x-forwarded-uri"] {
+        if let Some(value) = headers.get(header).and_then(|v| v.to_str().ok()) {
+            let path_only = value.split('?').next().unwrap_or(value);
+            if let Ok(slug) = extract_slug_from_path(path_only) {
+                return Ok(slug);
+            }
+        }
+    }
+
+    Err(ApiError::bad_request("Campaign slug missing from path."))
+}
+
+async fn load_campaign_context(
+    path: &str,
+    headers: &HeaderMap,
+    state: &Arc<AppState>,
+) -> Result<CampaignContext, ApiError> {
+    let slug = resolve_campaign_slug(path, headers)?;
+    let campaign = CampaignService::resolve_by_slug(state, &slug).await?;
+    Ok(CampaignContext {
+        paths: CampaignPaths::new(campaign.id.clone()),
+        campaign,
+    })
 }
 
 #[derive(serde::Deserialize)]
