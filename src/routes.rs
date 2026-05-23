@@ -12,6 +12,7 @@ use crate::features::locations::presentation::{
     create_location, delete_location, list_locations, update_location,
 };
 use crate::middleware::auth::{authenticate_middleware, require_admin_middleware};
+use crate::middleware::campaign_context::inject_campaign_context;
 use crate::middleware::csrf::{mint_csrf_token, require_csrf_middleware};
 use crate::middleware::rate_limit::{
     global_rate_limit_middleware, registration_rate_limit_middleware,
@@ -177,7 +178,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/settings", api_settings)
         .nest("/locations", api_locations)
         .nest("/inventory", api_inventory)
-        .nest("/raffles", api_raffles);
+        .nest("/raffles", api_raffles)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            inject_campaign_context,
+        ));
 
     let api_campaigns = with_admin(
         state.clone(),

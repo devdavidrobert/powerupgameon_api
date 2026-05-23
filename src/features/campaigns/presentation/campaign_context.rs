@@ -5,7 +5,7 @@ use crate::features::campaigns::domain::Campaign;
 use crate::features::campaigns::infrastructure::CampaignPaths;
 use axum::{
     extract::{FromRef, FromRequestParts},
-    http::request::Parts,
+    http::{request::Parts, StatusCode},
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -38,15 +38,13 @@ where
 
     fn from_request_parts(
         parts: &mut Parts,
-        state: &S,
+        _state: &S,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        let path = parts.uri.path().to_string();
-        let state = Arc::<AppState>::from_ref(state);
         async move {
-            let ctx = load_campaign_context(&path, &state).await?;
+            let ctx = campaign_context_from_parts(parts)?;
             if !ctx.campaign.is_publicly_accessible() {
                 return Err(ApiError::with_code(
-                    axum::http::StatusCode::FORBIDDEN,
+                    StatusCode::FORBIDDEN,
                     "CAMPAIGN_NOT_ACTIVE",
                     "This campaign is not currently active.",
                 ));
@@ -65,33 +63,18 @@ where
 
     fn from_request_parts(
         parts: &mut Parts,
-        state: &S,
+        _state: &S,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        let path = parts.uri.path().to_string();
-        let state = Arc::<AppState>::from_ref(state);
-        async move { load_campaign_context(&path, &state).await }
+        async move { campaign_context_from_parts(parts) }
     }
 }
 
-async fn load_campaign_context(path: &str, state: &Arc<AppState>) -> Result<CampaignContext, ApiError> {
-    let slug = extract_slug_from_path(path)?;
-    let campaign = CampaignService::resolve_by_slug(state, &slug).await?;
-    Ok(CampaignContext {
-        paths: CampaignPaths::new(campaign.id.clone()),
-        campaign,
-    })
-}
-
-fn extract_slug_from_path(path: &str) -> ApiResult<String> {
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if let Some(pos) = segments.iter().position(|&s| s == "campaigns") {
-        if let Some(slug) = segments.get(pos + 1) {
-            if *slug != "csrf-token" && !slug.is_empty() {
-                return Ok(slug.to_string());
-            }
-        }
-    }
-    Err(ApiError::bad_request("Campaign slug missing from path."))
+fn campaign_context_from_parts(parts: &Parts) -> Result<CampaignContext, ApiError> {
+    parts
+        .extensions
+        .get::<CampaignContext>()
+        .cloned()
+        .ok_or_else(|| ApiError::bad_request("Campaign slug missing from path."))
 }
 
 #[derive(serde::Deserialize)]
