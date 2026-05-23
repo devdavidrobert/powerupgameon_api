@@ -1,0 +1,28 @@
+[package]
+name = "powerupgameon-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7", features = ["json", "headers"] }
+tokio = { version = "1.0", features = ["full"] }
+tower = { version = "0.4", features = ["limit"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "limit"] }
+tower-governor = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+dotenvy = "0.15"
+config = "0.14"
+jsonwebtoken = "9.3"
+ring = "0.17"
+base64 = "0.22"
+rand = "0.8"
+redis = { version = "0.26", features = ["tokio-comp"] }
+google-cloud-firestore = "0.11"
+google-cloud-auth = "0.15"
+firebase-auth = "0.1"
