@@ -28,9 +28,9 @@ fn with_admin(state: Arc<AppState>, router: Router<Arc<AppState>>) -> Router<Arc
     router
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            authenticate_middleware,
+            require_admin_middleware,
         ))
-        .layer(middleware::from_fn_with_state(state, require_admin_middleware))
+        .layer(middleware::from_fn_with_state(state, authenticate_middleware))
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
