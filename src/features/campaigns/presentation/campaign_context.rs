@@ -42,6 +42,7 @@ where
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         let cached = parts.extensions.get::<CampaignContext>().cloned();
         let path = parts.uri.path().to_string();
+        let query = parts.uri.query().map(str::to_string);
         let headers = parts.headers.clone();
         let state = Arc::<AppState>::from_ref(state);
 
@@ -49,7 +50,7 @@ where
             let ctx = if let Some(ctx) = cached {
                 ctx
             } else {
-                load_campaign_context(&path, &headers, &state).await?
+                load_campaign_context(&path, query.as_deref(), &headers, &state).await?
             };
 
             if !ctx.campaign.is_publicly_accessible() {
@@ -77,6 +78,7 @@ where
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         let cached = parts.extensions.get::<CampaignContext>().cloned();
         let path = parts.uri.path().to_string();
+        let query = parts.uri.query().map(str::to_string);
         let headers = parts.headers.clone();
         let state = Arc::<AppState>::from_ref(state);
 
@@ -84,7 +86,7 @@ where
             if let Some(ctx) = cached {
                 Ok(ctx)
             } else {
-                load_campaign_context(&path, &headers, &state).await
+                load_campaign_context(&path, query.as_deref(), &headers, &state).await
             }
         }
     }
@@ -102,9 +104,15 @@ pub fn extract_slug_from_path(path: &str) -> ApiResult<String> {
     Err(ApiError::bad_request("Campaign slug missing from path."))
 }
 
-pub fn resolve_campaign_slug(path: &str, headers: &HeaderMap) -> ApiResult<String> {
+pub fn resolve_campaign_slug(path: &str, query: Option<&str>, headers: &HeaderMap) -> ApiResult<String> {
     if let Ok(slug) = extract_slug_from_path(path) {
         return Ok(slug);
+    }
+
+    if let Some(restored) = crate::middleware::vercel_path::resolve_original_path(query, headers) {
+        if let Ok(slug) = extract_slug_from_path(&restored) {
+            return Ok(slug);
+        }
     }
 
     for header in ["x-invoke-path", "x-original-url", "x-forwarded-uri"] {
@@ -121,10 +129,11 @@ pub fn resolve_campaign_slug(path: &str, headers: &HeaderMap) -> ApiResult<Strin
 
 async fn load_campaign_context(
     path: &str,
+    query: Option<&str>,
     headers: &HeaderMap,
     state: &Arc<AppState>,
 ) -> Result<CampaignContext, ApiError> {
-    let slug = resolve_campaign_slug(path, headers)?;
+    let slug = resolve_campaign_slug(path, query, headers)?;
     let campaign = CampaignService::resolve_by_slug(state, &slug).await?;
     Ok(CampaignContext {
         paths: CampaignPaths::new(campaign.id.clone()),

@@ -18,7 +18,7 @@ pub async fn inject_campaign_context(
     next: Next,
 ) -> ApiResult<Response> {
     if req.extensions().get::<CampaignContext>().is_none() {
-        let slug = resolve_campaign_slug(req.uri().path(), req.headers())?;
+        let slug = resolve_campaign_slug(req.uri().path(), req.uri().query(), req.headers())?;
         let campaign = CampaignService::resolve_by_slug(&state, &slug).await?;
         req.extensions_mut().insert(CampaignContext {
             paths: CampaignPaths::new(campaign.id.clone()),
