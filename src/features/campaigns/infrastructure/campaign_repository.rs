@@ -279,6 +279,48 @@ pub struct CampaignUpdateInput {
     pub geo_enforcement: Option<GeoEnforcement>,
 }
 
+pub fn parse_challenge_time_value(value: &Value) -> ApiResult<Value> {
+    match value {
+        Value::Null => Ok(Value::Null),
+        Value::Number(n) => {
+            let ms = n
+                .as_i64()
+                .ok_or_else(|| ApiError::bad_request("Invalid challenge time."))?;
+            Ok(json!(ms))
+        }
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(Value::Null);
+            }
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+                return Ok(json!(dt.timestamp_millis()));
+            }
+            for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
+                if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(trimmed, fmt) {
+                    return Ok(json!(naive.and_utc().timestamp_millis()));
+                }
+            }
+            Err(ApiError::bad_request("Invalid challenge time."))
+        }
+        _ => Err(ApiError::bad_request("Invalid challenge time.")),
+    }
+}
+
+pub fn validate_challenge_window(payload: &Map<String, Value>) -> ApiResult<()> {
+    if let (Some(start), Some(end)) = (
+        payload.get("challengeStartTime").and_then(|v| v.as_i64()),
+        payload.get("challengeEndTime").and_then(|v| v.as_i64()),
+    ) {
+        if start >= end {
+            return Err(ApiError::bad_request(
+                "challengeEndTime must be after challengeStartTime.",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_slug(slug: &str) -> ApiResult<()> {
     if slug.is_empty() || slug.len() > 64 {
         return Err(ApiError::bad_request("slug must be 1-64 characters."));

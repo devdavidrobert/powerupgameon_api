@@ -3,7 +3,8 @@ use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::application::CampaignService;
 use crate::features::campaigns::domain::{CampaignStatus, GeoEnforcement, StaggerMode};
 use crate::features::campaigns::infrastructure::{
-    build_update_payload, campaign_to_json, parse_stagger_schedule, validate_slug,
+    build_update_payload, campaign_to_json, parse_challenge_time_value, parse_stagger_schedule,
+    validate_challenge_window, validate_slug,
     CampaignRepository, CampaignUpdateInput,
 };
 use crate::features::campaigns::presentation::campaign_context::{CampaignContext, SlugPath};
@@ -28,9 +29,9 @@ pub struct UpdateCampaignBody {
     pub name: Option<String>,
     pub status: Option<String>,
     #[serde(rename = "challengeStartTime")]
-    pub challenge_start_time: Option<Option<String>>,
+    pub challenge_start_time: Option<Value>,
     #[serde(rename = "challengeEndTime")]
-    pub challenge_end_time: Option<Option<String>>,
+    pub challenge_end_time: Option<Value>,
     #[serde(rename = "staggerMode")]
     pub stagger_mode: Option<String>,
     #[serde(rename = "staggerSchedule")]
@@ -83,11 +84,11 @@ pub async fn update_campaign(
     if let Some(status) = body.status {
         input.status = Some(CampaignStatus::from_str(&status));
     }
-    if let Some(start) = body.challenge_start_time {
-        input.challenge_start_time = Some(parse_optional_time(start)?);
+    if let Some(start) = body.challenge_start_time.as_ref() {
+        input.challenge_start_time = Some(parse_challenge_time_value(start)?);
     }
-    if let Some(end) = body.challenge_end_time {
-        input.challenge_end_time = Some(parse_optional_time(end)?);
+    if let Some(end) = body.challenge_end_time.as_ref() {
+        input.challenge_end_time = Some(parse_challenge_time_value(end)?);
     }
     if let Some(mode) = body.stagger_mode {
         input.stagger_mode = Some(StaggerMode::from_str(&mode));
@@ -100,16 +101,7 @@ pub async fn update_campaign(
     }
 
     let payload = build_update_payload(&input)?;
-    if let (Some(start), Some(end)) = (
-        payload.get("challengeStartTime").and_then(|v| v.as_i64()),
-        payload.get("challengeEndTime").and_then(|v| v.as_i64()),
-    ) {
-        if start >= end {
-            return Err(ApiError::bad_request(
-                "challengeEndTime must be after challengeStartTime.",
-            ));
-        }
-    }
+    validate_challenge_window(&payload)?;
 
     let updated = CampaignRepository::update(&state, ctx.campaign_id(), payload).await?;
     CampaignService::invalidate_slug(&slug);
@@ -151,11 +143,11 @@ pub async fn update_campaign_settings(
     Json(body): Json<UpdateCampaignBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
     let mut input = CampaignUpdateInput::default();
-    if let Some(start) = body.challenge_start_time {
-        input.challenge_start_time = Some(parse_optional_time(start)?);
+    if let Some(start) = body.challenge_start_time.as_ref() {
+        input.challenge_start_time = Some(parse_challenge_time_value(start)?);
     }
-    if let Some(end) = body.challenge_end_time {
-        input.challenge_end_time = Some(parse_optional_time(end)?);
+    if let Some(end) = body.challenge_end_time.as_ref() {
+        input.challenge_end_time = Some(parse_challenge_time_value(end)?);
     }
     if let Some(mode) = body.stagger_mode {
         input.stagger_mode = Some(StaggerMode::from_str(&mode));
@@ -168,6 +160,7 @@ pub async fn update_campaign_settings(
     }
 
     let payload = build_update_payload(&input)?;
+    validate_challenge_window(&payload)?;
     let updated = CampaignRepository::update(&state, ctx.campaign_id(), payload).await?;
     CampaignService::invalidate_slug(ctx.slug());
     Ok(SuccessResponse::data(json!({
@@ -196,15 +189,3 @@ pub async fn clear_campaign_timers(
 }
 
 use crate::features::campaigns::presentation::campaign_context::PublicCampaignContext;
-
-fn parse_optional_time(value: Option<String>) -> ApiResult<Value> {
-    match value {
-        None => Ok(Value::Null),
-        Some(s) if s.trim().is_empty() => Ok(Value::Null),
-        Some(s) => {
-            let dt = chrono::DateTime::parse_from_rfc3339(s.trim())
-                .map_err(|_| ApiError::bad_request("Invalid challenge time."))?;
-            Ok(json!(dt.timestamp_millis()))
-        }
-    }
-}

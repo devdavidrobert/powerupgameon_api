@@ -75,7 +75,7 @@ impl IpGeoService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::locations::domain::GeoValidationResult;
+    use crate::features::locations::domain::{GeoValidationResult, IpGeoPoint};
 
     fn nairobi_cbd() -> Location {
         Location {
