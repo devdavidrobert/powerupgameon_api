@@ -2,6 +2,7 @@ pub mod app_state;
 pub mod config;
 pub mod controllers;
 pub mod error;
+pub mod features;
 pub mod logger;
 pub mod middleware;
 pub mod models;

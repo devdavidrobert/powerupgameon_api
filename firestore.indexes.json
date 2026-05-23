@@ -4,18 +4,38 @@
       "collectionGroup": "registrations",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "kind",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "registeredAt",
-          "order": "DESCENDING"
-        },
-        {
-          "fieldPath": "__name__",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "kind", "order": "ASCENDING" },
+        { "fieldPath": "registeredAt", "order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "submissions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "submittedAt", "order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "submissions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "score", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "raffle_winners",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "raffleId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "campaigns",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "slug", "order": "ASCENDING" }
       ]
     }
   ],

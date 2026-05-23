@@ -1,13 +1,10 @@
-use crate::app_state::AppState;
-use crate::config::Config;
-use crate::models::settings::SettingsModel;
 use crate::error::{ApiError, ApiResult};
+use crate::features::campaigns::domain::Campaign;
 
-pub async fn assert_challenge_open(state: &AppState) -> ApiResult<()> {
-    let settings = SettingsModel::get(state).await?;
+pub fn assert_challenge_open_for_campaign(campaign: &Campaign) -> ApiResult<()> {
     let now = chrono::Utc::now().timestamp_millis();
 
-    if let Some(start) = settings.challenge_start_time {
+    if let Some(start) = campaign.challenge_start_time {
         if now < start {
             return Err(ApiError::with_code(
                 axum::http::StatusCode::FORBIDDEN,
@@ -17,7 +14,7 @@ pub async fn assert_challenge_open(state: &AppState) -> ApiResult<()> {
         }
     }
 
-    if let Some(end) = settings.challenge_end_time {
+    if let Some(end) = campaign.challenge_end_time {
         if now > end {
             return Err(ApiError::with_code(
                 axum::http::StatusCode::FORBIDDEN,
@@ -28,9 +25,4 @@ pub async fn assert_challenge_open(state: &AppState) -> ApiResult<()> {
     }
 
     Ok(())
-}
-
-pub async fn assert_challenge_open_config(config: &Config, state: &AppState) -> ApiResult<()> {
-    let _ = config;
-    assert_challenge_open(state).await
 }

@@ -172,7 +172,7 @@ pub fn spin_rate_limit_key(config: &Config, ip: &str, body: &[u8]) -> String {
 fn extract_spin_session_id(config: &Config, body: &[u8]) -> Option<String> {
     let parsed: SpinRateLimitBody = serde_json::from_slice(body).ok()?;
     let token = parsed.spin_token.filter(|s| !s.is_empty())?;
-    verify_spin_token(config, &token).ok()
+    verify_spin_token(config, &token).ok().map(|(sid, _)| sid)
 }
 
 pub async fn spin_rate_limit_middleware(

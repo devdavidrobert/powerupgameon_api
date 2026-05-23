@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
+use crate::features::campaigns::presentation::CampaignContext;
 use crate::models::raffle::RaffleModel;
 use crate::models::submission::SubmissionModel;
 use crate::utils::firestore::value_to_iso;
@@ -16,8 +17,9 @@ use std::sync::Arc;
 
 pub async fn get_all_raffles(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
 ) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
-    let raffles = RaffleModel::find_all_raffles(&state).await?;
+    let raffles = RaffleModel::find_all_raffles(&state, &ctx.paths).await?;
     let data = raffles
         .into_iter()
         .map(|mut r| {
@@ -34,16 +36,17 @@ pub async fn get_all_raffles(
 
 pub async fn get_raffle_winners(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Path(raffle_id): Path<String>,
 ) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
-    if RaffleModel::find_raffle_by_id(&state, &raffle_id)
+    if RaffleModel::find_raffle_by_id(&state, &ctx.paths, &raffle_id)
         .await?
         .is_none()
     {
         return Err(ApiError::bad_request("Raffle not found."));
     }
 
-    let winners = RaffleModel::find_winners_by_raffle(&state, &raffle_id).await?;
+    let winners = RaffleModel::find_winners_by_raffle(&state, &ctx.paths, &raffle_id).await?;
     let data = winners
         .into_iter()
         .map(|mut w| {
@@ -70,6 +73,7 @@ pub struct CreateRaffleBody {
 
 pub async fn create_raffle(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Json(body): Json<CreateRaffleBody>,
 ) -> ApiResult<(StatusCode, Json<SuccessResponse<Value>>)> {
     let winner_count = body.winner_count.unwrap_or(0);
@@ -79,6 +83,7 @@ pub async fn create_raffle(
 
     let pool = SubmissionModel::find_for_raffle_pool(
         &state,
+        &ctx.paths,
         body.min_score.unwrap_or(0),
         body.prize_winners_only.unwrap_or(false),
     )
@@ -143,7 +148,8 @@ pub async fn create_raffle(
         .collect();
 
     let (raffle, winner_rows) =
-        RaffleModel::create_raffle_with_winners(&state, &raffle_name, winners).await?;
+        RaffleModel::create_raffle_with_winners(&state, &ctx.paths, &raffle_name, winners)
+            .await?;
 
     let response = json!({
         "raffle": serialize_raffle(&raffle),
@@ -161,13 +167,14 @@ pub struct UpdateWinnerBody {
 
 pub async fn update_winner_gift_status(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Path(winner_id): Path<String>,
     Json(body): Json<UpdateWinnerBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
     let Some(gift_received) = body.gift_received else {
         return Err(ApiError::bad_request("giftReceived must be a boolean."));
     };
-    RaffleModel::update_gift_received(&state, &winner_id, gift_received).await?;
+    RaffleModel::update_gift_received(&state, &ctx.paths, &winner_id, gift_received).await?;
     Ok(SuccessResponse::message("Gift status updated."))
 }
 

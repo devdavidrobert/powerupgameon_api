@@ -1,8 +1,16 @@
 use crate::app_state::AppState;
 use crate::controllers::{
-    auth, prizes, questions, raffles, registrations, settings, spin, submissions,
+    auth, prizes, questions, raffles, registrations, spin, submissions,
 };
 use crate::error::{json_error, SuccessResponse};
+use crate::features::campaigns::presentation::{
+    archive_campaign, clear_campaign_timers, create_campaign, get_campaign, get_campaign_settings,
+    list_campaigns, update_campaign, update_campaign_settings,
+};
+use crate::features::inventory::presentation::{list_inventory, upsert_inventory};
+use crate::features::locations::presentation::{
+    create_location, delete_location, list_locations, update_location,
+};
 use crate::middleware::auth::{authenticate_middleware, require_admin_middleware};
 use crate::middleware::csrf::{mint_csrf_token, require_csrf_middleware};
 use crate::middleware::rate_limit::{
@@ -122,23 +130,35 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 ),
         ));
 
-    let api_spin = Router::new()
-        .route(
-            "/",
-            post(spin::spin_wheel).layer(middleware::from_fn_with_state(
-                state.clone(),
-                spin_rate_limit_middleware,
-            )),
-        );
+    let api_spin = Router::new().route(
+        "/",
+        post(spin::spin_wheel).layer(middleware::from_fn_with_state(
+            state.clone(),
+            spin_rate_limit_middleware,
+        )),
+    );
 
     let api_settings = Router::new()
-        .route("/", get(settings::get_settings))
+        .route("/", get(get_campaign_settings))
         .merge(with_admin(
             admin.clone(),
             Router::new()
-                .route("/", put(settings::update_settings))
-                .route("/timers", delete(settings::clear_timers)),
+                .route("/", put(update_campaign_settings))
+                .route("/timers", delete(clear_campaign_timers)),
         ));
+
+    let api_locations = with_admin(
+        admin.clone(),
+        Router::new()
+            .route("/", get(list_locations).post(create_location))
+            .route("/{id}", put(update_location).delete(delete_location)),
+    );
+
+    let api_inventory = with_admin(
+        admin.clone(),
+        Router::new()
+            .route("/", get(list_inventory).put(upsert_inventory)),
+    );
 
     let api_raffles = with_admin(
         admin,
@@ -146,6 +166,24 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             .route("/", get(raffles::get_all_raffles).post(raffles::create_raffle))
             .route("/{raffle_id}/winners", get(raffles::get_raffle_winners))
             .route("/winners/{winner_id}", patch(raffles::update_winner_gift_status)),
+    );
+
+    let campaign_slug_routes = Router::new()
+        .nest("/questions", api_questions)
+        .nest("/prizes", api_prizes)
+        .nest("/registrations", api_registrations)
+        .nest("/submissions", api_submissions)
+        .nest("/spin", api_spin)
+        .nest("/settings", api_settings)
+        .nest("/locations", api_locations)
+        .nest("/inventory", api_inventory)
+        .nest("/raffles", api_raffles);
+
+    let api_campaigns = with_admin(
+        state.clone(),
+        Router::new()
+            .route("/", get(list_campaigns).post(create_campaign))
+            .route("/{slug}", get(get_campaign).put(update_campaign).delete(archive_campaign)),
     );
 
     let api_auth = Router::new()
@@ -162,14 +200,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/csrf-token", get(csrf_token))
+        .nest("/api/campaigns", csrf(api_campaigns))
+        .nest("/api/campaigns/{slug}", csrf(campaign_slug_routes))
         .nest("/api/auth", csrf(api_auth))
-        .nest("/api/questions", csrf(api_questions))
-        .nest("/api/prizes", csrf(api_prizes))
-        .nest("/api/registrations", csrf(api_registrations))
-        .nest("/api/submissions", csrf(api_submissions))
-        .nest("/api/spin", csrf(api_spin))
-        .nest("/api/settings", csrf(api_settings))
-        .nest("/api/raffles", csrf(api_raffles))
         .fallback(|| async { json_error(StatusCode::NOT_FOUND, "Route not found.") })
         .layer(middleware::from_fn_with_state(state.clone(), global_rate_limit_middleware))
         .layer(middleware::from_fn(request_context_middleware))

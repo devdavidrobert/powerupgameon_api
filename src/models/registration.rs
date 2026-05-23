@@ -1,5 +1,10 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
+use crate::features::campaigns::domain::GeoEnforcement;
+use crate::features::campaigns::infrastructure::CampaignPaths;
+use crate::features::locations::application::GeoService;
+use crate::features::locations::domain::{GeoPoint, GeoStatus, GeoValidationResult};
+use crate::features::locations::infrastructure::LocationRepository;
 use crate::utils::firestore::millis_now;
 use firestore::errors::{
     BackoffError, FirestoreError, FirestoreInvalidParametersError,
@@ -10,19 +15,37 @@ use serde_json::{json, Map, Value};
 use std::future::Future;
 use std::pin::Pin;
 
-const COLLECTION: &str = "registrations";
-const SESSIONS_COLLECTION: &str = "sessions";
+const REGISTRATIONS_SUBCOL: &str = "registrations";
+const SESSIONS_SUBCOL: &str = "sessions";
 
 pub struct RegistrationModel;
 
+pub struct RegistrationInput {
+    pub session_id: String,
+    pub full_name: String,
+    pub normalized_name: String,
+    pub ip: String,
+    pub user_agent: String,
+    pub lat: f64,
+    pub lng: f64,
+    pub location_id: Option<String>,
+    pub geo_status: GeoStatus,
+}
+
 impl RegistrationModel {
-    pub async fn find_by_id(state: &AppState, id: &str) -> ApiResult<Option<Map<String, Value>>> {
+    pub async fn find_by_id(
+        state: &AppState,
+        paths: &CampaignPaths,
+        id: &str,
+    ) -> ApiResult<Option<Map<String, Value>>> {
+        let parent = paths.parent_str(&state.db.client)?;
         state
             .db
             .client
             .fluent()
             .select()
-            .by_id_in(COLLECTION)
+            .by_id_in(REGISTRATIONS_SUBCOL)
+            .parent(parent)
             .obj()
             .one(id)
             .await
@@ -31,16 +54,19 @@ impl RegistrationModel {
 
     pub async fn find_player_page(
         state: &AppState,
+        paths: &CampaignPaths,
         limit: usize,
         _cursor: Option<Map<String, Value>>,
     ) -> ApiResult<(Vec<Map<String, Value>>, Option<Map<String, Value>>, bool)> {
+        let parent = paths.parent_str(&state.db.client)?;
         let cap = limit.clamp(1, 200);
         let items: Vec<Map<String, Value>> = state
             .db
             .client
             .fluent()
             .select()
-            .from(COLLECTION)
+            .from(REGISTRATIONS_SUBCOL)
+            .parent(parent)
             .filter(|q| q.field("kind").eq("player"))
             .order_by([
                 ("registeredAt", FirestoreQueryDirection::Descending),
@@ -56,27 +82,59 @@ impl RegistrationModel {
         Ok((items, None, has_more))
     }
 
+    pub async fn resolve_geo(
+        state: &AppState,
+        paths: &CampaignPaths,
+        geo_enforcement: GeoEnforcement,
+        lat: f64,
+        lng: f64,
+    ) -> ApiResult<(Option<String>, GeoStatus)> {
+        GeoService::validate_coordinates(lat, lng).map_err(ApiError::bad_request)?;
+
+        let locations = LocationRepository::find_all(state, paths).await?;
+        let point = GeoPoint { lat, lng };
+        match GeoService::resolve_location(&point, &locations) {
+            GeoValidationResult::Matched { location_id } => {
+                Ok((Some(location_id), GeoStatus::Valid))
+            }
+            GeoValidationResult::NoZonesConfigured => Ok((None, GeoStatus::NoZones)),
+            GeoValidationResult::OutsideZones => {
+                if geo_enforcement == GeoEnforcement::Reject {
+                    return Err(ApiError::with_code(
+                        axum::http::StatusCode::FORBIDDEN,
+                        "GEO_OUTSIDE_ZONE",
+                        "You are outside the allowed participation zones for this campaign.",
+                    ));
+                }
+                Ok((None, GeoStatus::Outside))
+            }
+        }
+    }
+
     pub async fn register(
         state: &AppState,
-        session_id: &str,
-        full_name: &str,
-        normalized_name: &str,
-        ip: &str,
-        user_agent: &str,
+        paths: &CampaignPaths,
+        input: RegistrationInput,
     ) -> ApiResult<()> {
+        let parent = paths.parent_str(&state.db.client)?;
         let db = state.db.client.clone();
-        let session_id = session_id.to_string();
-        let full_name_upper = full_name.to_uppercase();
-        let normalized_name = normalized_name.to_string();
+        let session_id = input.session_id.clone();
+        let full_name_upper = input.full_name.to_uppercase();
+        let normalized_name = input.normalized_name.clone();
         let name_ref = format!("name_{normalized_name}");
-        let ip = ip.to_string();
-        let user_agent = user_agent.to_string();
+        let ip = input.ip.clone();
+        let user_agent = input.user_agent.clone();
         let now = millis_now();
+        let location_id = input.location_id.clone();
+        let geo_status = input.geo_status.as_str().to_string();
+        let lat = input.lat;
+        let lng = input.lng;
 
         db.run_transaction(move |db, transaction| {
             register_tx(
                 db,
                 transaction,
+                parent.clone(),
                 session_id.clone(),
                 full_name_upper.clone(),
                 normalized_name.clone(),
@@ -84,6 +142,10 @@ impl RegistrationModel {
                 ip.clone(),
                 user_agent.clone(),
                 now,
+                location_id.clone(),
+                geo_status.clone(),
+                lat,
+                lng,
             )
         })
         .await
@@ -92,21 +154,23 @@ impl RegistrationModel {
         Ok(())
     }
 
-    pub async fn delete(state: &AppState, id: &str) -> ApiResult<()> {
-        let reg = Self::find_by_id(state, id).await?;
+    pub async fn delete(state: &AppState, paths: &CampaignPaths, id: &str) -> ApiResult<()> {
+        let reg = Self::find_by_id(state, paths, id).await?;
         let Some(reg) = reg else {
             return Ok(());
         };
 
+        let parent = paths.parent_str(&state.db.client)?;
         let writer = state.db.batch_writer().await.map_err(|e| ApiError::Internal(e.into()))?;
         let mut batch = writer.new_batch();
 
-        db_delete(&state.db.client, &mut batch, COLLECTION, id)?;
+        db_delete(&state.db.client, &mut batch, parent.as_str(), REGISTRATIONS_SUBCOL, id)?;
         if let Some(normalized) = reg.get("normalizedName").and_then(|v| v.as_str()) {
             db_delete(
                 &state.db.client,
                 &mut batch,
-                COLLECTION,
+                parent.as_str(),
+                REGISTRATIONS_SUBCOL,
                 &format!("name_{normalized}"),
             )?;
         }
@@ -119,6 +183,7 @@ impl RegistrationModel {
 fn register_tx<'b>(
     db: firestore::FirestoreDb,
     transaction: &'b mut firestore::FirestoreTransaction,
+    parent: String,
     session_id: String,
     full_name_upper: String,
     normalized_name: String,
@@ -126,12 +191,17 @@ fn register_tx<'b>(
     ip: String,
     user_agent: String,
     now: i64,
+    location_id: Option<String>,
+    geo_status: String,
+    lat: f64,
+    lng: f64,
 ) -> Pin<Box<dyn Future<Output = Result<(), BackoffError<FirestoreError>>> + Send + 'b>> {
     Box::pin(async move {
         let name_doc: Option<Map<String, Value>> = db
             .fluent()
             .select()
-            .by_id_in(COLLECTION)
+            .by_id_in(REGISTRATIONS_SUBCOL)
+            .parent(parent.as_str())
             .obj()
             .one(&name_ref)
             .await
@@ -144,7 +214,8 @@ fn register_tx<'b>(
         let session_doc: Option<Map<String, Value>> = db
             .fluent()
             .select()
-            .by_id_in(SESSIONS_COLLECTION)
+            .by_id_in(SESSIONS_SUBCOL)
+            .parent(parent.as_str())
             .obj()
             .one(&session_id)
             .await
@@ -168,8 +239,9 @@ fn register_tx<'b>(
 
         db.fluent()
             .update()
-            .in_col(SESSIONS_COLLECTION)
+            .in_col(SESSIONS_SUBCOL)
             .document_id(&session_id)
+            .parent(parent.as_str())
             .object(&json!({
                 "fullName": full_name_upper,
                 "sessionId": session_id,
@@ -181,8 +253,9 @@ fn register_tx<'b>(
 
         db.fluent()
             .update()
-            .in_col(COLLECTION)
+            .in_col(REGISTRATIONS_SUBCOL)
             .document_id(&name_ref)
+            .parent(parent.as_str())
             .object(&json!({
                 "kind": "name_lock",
                 "blocked": true,
@@ -197,8 +270,9 @@ fn register_tx<'b>(
 
         db.fluent()
             .update()
-            .in_col(COLLECTION)
+            .in_col(REGISTRATIONS_SUBCOL)
             .document_id(&session_id)
+            .parent(parent.as_str())
             .object(&json!({
                 "kind": "player",
                 "sessionId": session_id,
@@ -207,6 +281,10 @@ fn register_tx<'b>(
                 "ip": ip,
                 "userAgent": user_agent,
                 "registeredAt": now,
+                "locationId": location_id,
+                "lat": lat,
+                "lng": lng,
+                "geoStatus": geo_status,
             }))
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
@@ -227,12 +305,14 @@ fn tx_err(code: &str) -> BackoffError<FirestoreError> {
 fn db_delete(
     db: &firestore::FirestoreDb,
     batch: &mut firestore::FirestoreBatch<'_, firestore::FirestoreSimpleBatchWriter>,
+    parent: &str,
     collection: &str,
     id: &str,
 ) -> ApiResult<()> {
     db.fluent()
         .delete()
         .from(collection)
+        .parent(parent)
         .document_id(id)
         .add_to_batch(batch)
         .map_err(|e| ApiError::Internal(e.into()))?;

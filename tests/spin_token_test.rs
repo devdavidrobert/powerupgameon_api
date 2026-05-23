@@ -7,9 +7,10 @@ use powerupgameon_api::utils::spin_token::{mint_spin_token, verify_spin_token};
 #[test]
 fn mint_and_verify_spin_token() {
     let config = test_config();
-    let token = mint_spin_token(&config, "session-123").expect("mint");
-    let sid = verify_spin_token(&config, &token).expect("verify");
+    let token = mint_spin_token(&config, "campaign-1", "session-123").expect("mint");
+    let (sid, cid) = verify_spin_token(&config, &token).expect("verify");
     assert_eq!(sid, "session-123");
+    assert_eq!(cid, "campaign-1");
 }
 
 #[test]
@@ -27,7 +28,7 @@ fn rejects_empty_spin_token() {
 #[test]
 fn rejects_bad_spin_signature() {
     let config = test_config();
-    let token = mint_spin_token(&config, "session-123").expect("mint");
+    let token = mint_spin_token(&config, "campaign-1", "session-123").expect("mint");
     let mut bad = token.clone();
     bad.pop();
     bad.push('x');
@@ -43,7 +44,7 @@ fn rejects_bad_spin_signature() {
 #[test]
 fn rejects_expired_spin_token() {
     let config = test_config();
-    let token = sign_spin_payload(&config.spin_token_secret, "session-123", 0);
+    let token = sign_spin_payload(&config.spin_token_secret, "campaign-1", "session-123", 0);
     let err = verify_spin_token(&config, &token).unwrap_err();
     match err {
         ApiError::WithStatus {

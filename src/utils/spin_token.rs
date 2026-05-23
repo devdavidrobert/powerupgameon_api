@@ -9,20 +9,22 @@ const TTL_MS: i64 = 20 * 60 * 1000;
 #[derive(Serialize, Deserialize)]
 struct SpinPayload {
     sid: String,
+    cid: String,
     exp: i64,
 }
 
-pub fn mint_spin_token(config: &Config, session_id: &str) -> ApiResult<String> {
+pub fn mint_spin_token(config: &Config, campaign_id: &str, session_id: &str) -> ApiResult<String> {
     assert_secret(config)?;
     let exp = chrono::Utc::now().timestamp_millis() + TTL_MS;
     let payload = SpinPayload {
         sid: session_id.to_string(),
+        cid: campaign_id.to_string(),
         exp,
     };
     sign_payload(config, &payload)
 }
 
-pub fn verify_spin_token(config: &Config, token: &str) -> ApiResult<String> {
+pub fn verify_spin_token(config: &Config, token: &str) -> ApiResult<(String, String)> {
     assert_secret(config)?;
     if token.is_empty() {
         return Err(ApiError::with_code(
@@ -75,7 +77,7 @@ pub fn verify_spin_token(config: &Config, token: &str) -> ApiResult<String> {
         ));
     }
 
-    Ok(parsed.sid)
+    Ok((parsed.sid, parsed.cid))
 }
 
 fn sign_payload(config: &Config, payload: &SpinPayload) -> ApiResult<String> {

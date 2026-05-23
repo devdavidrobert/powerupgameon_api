@@ -1,22 +1,28 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
+use crate::features::campaigns::infrastructure::CampaignPaths;
 use crate::utils::firestore::millis_now;
 use firestore::FirestoreQueryDirection;
 use serde_json::{json, Map, Value};
 
-const RAFFLES: &str = "raffles";
-const WINNERS: &str = "raffle_winners";
+const RAFFLES_SUBCOL: &str = "raffles";
+const WINNERS_SUBCOL: &str = "raffle_winners";
 
 pub struct RaffleModel;
 
 impl RaffleModel {
-    pub async fn find_all_raffles(state: &AppState) -> ApiResult<Vec<Map<String, Value>>> {
+    pub async fn find_all_raffles(
+        state: &AppState,
+        paths: &CampaignPaths,
+    ) -> ApiResult<Vec<Map<String, Value>>> {
+        let parent = paths.parent_str(&state.db.client)?;
         state
             .db
             .client
             .fluent()
             .select()
-            .from(RAFFLES)
+            .from(RAFFLES_SUBCOL)
+            .parent(parent)
             .order_by([("createdAt", FirestoreQueryDirection::Descending)])
             .obj()
             .query()
@@ -24,13 +30,19 @@ impl RaffleModel {
             .map_err(|e| ApiError::Internal(e.into()))
     }
 
-    pub async fn find_raffle_by_id(state: &AppState, id: &str) -> ApiResult<Option<Map<String, Value>>> {
+    pub async fn find_raffle_by_id(
+        state: &AppState,
+        paths: &CampaignPaths,
+        id: &str,
+    ) -> ApiResult<Option<Map<String, Value>>> {
+        let parent = paths.parent_str(&state.db.client)?;
         state
             .db
             .client
             .fluent()
             .select()
-            .by_id_in(RAFFLES)
+            .by_id_in(RAFFLES_SUBCOL)
+            .parent(parent)
             .obj()
             .one(id)
             .await
@@ -39,14 +51,17 @@ impl RaffleModel {
 
     pub async fn find_winners_by_raffle(
         state: &AppState,
+        paths: &CampaignPaths,
         raffle_id: &str,
     ) -> ApiResult<Vec<Map<String, Value>>> {
+        let parent = paths.parent_str(&state.db.client)?;
         let mut winners: Vec<Map<String, Value>> = state
             .db
             .client
             .fluent()
             .select()
-            .from(WINNERS)
+            .from(WINNERS_SUBCOL)
+            .parent(parent)
             .filter(|q| q.field("raffleId").eq(raffle_id))
             .obj()
             .query()
@@ -72,11 +87,13 @@ impl RaffleModel {
 
     pub async fn create_raffle_with_winners(
         state: &AppState,
+        paths: &CampaignPaths,
         name: &str,
         winners: Vec<Map<String, Value>>,
     ) -> ApiResult<(Map<String, Value>, Vec<Map<String, Value>>)> {
         let now = millis_now();
         let raffle_id = uuid::Uuid::new_v4().to_string();
+        let parent = paths.parent_str(&state.db.client)?;
         let writer = state.db.batch_writer().await.map_err(|e| ApiError::Internal(e.into()))?;
         let mut batch = writer.new_batch();
 
@@ -85,8 +102,9 @@ impl RaffleModel {
             .client
             .fluent()
             .update()
-            .in_col(RAFFLES)
+            .in_col(RAFFLES_SUBCOL)
             .document_id(&raffle_id)
+            .parent(parent.as_str())
             .object(&json!({
                 "name": name,
                 "winnerCount": winners.len(),
@@ -108,8 +126,9 @@ impl RaffleModel {
                 .client
                 .fluent()
                 .update()
-                .in_col(WINNERS)
+                .in_col(WINNERS_SUBCOL)
                 .document_id(&winner_id)
+                .parent(parent.as_str())
                 .object(&payload)
                 .add_to_batch(&mut batch)
                 .map_err(|e| ApiError::Internal(e.into()))?;
@@ -130,16 +149,19 @@ impl RaffleModel {
 
     pub async fn update_gift_received(
         state: &AppState,
+        paths: &CampaignPaths,
         winner_id: &str,
         gift_received: bool,
     ) -> ApiResult<()> {
+        let parent = paths.parent_str(&state.db.client)?;
         state
             .db
             .client
             .fluent()
             .update()
-            .in_col(WINNERS)
+            .in_col(WINNERS_SUBCOL)
             .document_id(winner_id)
+            .parent(parent)
             .object(&json!({ "giftReceived": gift_received }))
             .execute::<Map<String, Value>>()
             .await

@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
+use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
 use crate::models::question::QuestionModel;
 use axum::{
     extract::{Path, State},
@@ -28,8 +29,9 @@ fn public_cache_headers() -> HeaderMap {
 
 pub async fn get_all_questions(
     State(state): State<Arc<AppState>>,
+    PublicCampaignContext(ctx): PublicCampaignContext,
 ) -> ApiResult<(HeaderMap, Json<SuccessResponse<Vec<Map<String, Value>>>>)> {
-    let questions = QuestionModel::find_all(&state).await?;
+    let questions = QuestionModel::find_all(&state, &ctx.paths).await?;
     Ok((
         public_cache_headers(),
         SuccessResponse::data(questions.into_iter().map(to_public).collect()),
@@ -38,15 +40,19 @@ pub async fn get_all_questions(
 
 pub async fn get_all_questions_admin(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
 ) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
-    Ok(SuccessResponse::data(QuestionModel::find_all(&state).await?))
+    Ok(SuccessResponse::data(
+        QuestionModel::find_all(&state, &ctx.paths).await?,
+    ))
 }
 
 pub async fn get_question(
     State(state): State<Arc<AppState>>,
+    PublicCampaignContext(ctx): PublicCampaignContext,
     Path(id): Path<String>,
 ) -> ApiResult<(HeaderMap, Json<SuccessResponse<Map<String, Value>>>)> {
-    let question = QuestionModel::find_by_id(&state, &id)
+    let question = QuestionModel::find_by_id(&state, &ctx.paths, &id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Question not found."))?;
     Ok((public_cache_headers(), SuccessResponse::data(to_public(question))))
@@ -62,6 +68,7 @@ pub struct QuestionBody {
 
 pub async fn create_question(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Json(body): Json<QuestionBody>,
 ) -> ApiResult<(axum::http::StatusCode, Json<SuccessResponse<Map<String, Value>>>)> {
     let text = body.text.as_deref().unwrap_or("").trim();
@@ -77,7 +84,7 @@ pub async fn create_question(
             "correctIndex must be a valid index within options array.",
         ));
     }
-    let all = QuestionModel::find_all(&state).await?;
+    let all = QuestionModel::find_all(&state, &ctx.paths).await?;
     let order = body.order.unwrap_or(all.len() as i64 + 1);
     let mut data = Map::new();
     data.insert("text".into(), json!(text));
@@ -87,17 +94,20 @@ pub async fn create_question(
     );
     data.insert("correctIndex".into(), json!(correct_index));
     data.insert("order".into(), json!(order));
-    let question = QuestionModel::create(&state, data).await?;
-    QuestionModel::invalidate_list_cache();
+    let question = QuestionModel::create(&state, &ctx.paths, data).await?;
     Ok((axum::http::StatusCode::CREATED, SuccessResponse::data(question)))
 }
 
 pub async fn update_question(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Path(id): Path<String>,
     Json(body): Json<QuestionBody>,
 ) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
-    if QuestionModel::find_by_id(&state, &id).await?.is_none() {
+    if QuestionModel::find_by_id(&state, &ctx.paths, &id)
+        .await?
+        .is_none()
+    {
         return Err(ApiError::bad_request("Question not found."));
     }
     let mut updates = Map::new();
@@ -116,19 +126,21 @@ pub async fn update_question(
     if let Some(order) = body.order {
         updates.insert("order".into(), json!(order));
     }
-    let updated = QuestionModel::update(&state, &id, updates).await?;
-    QuestionModel::invalidate_list_cache();
+    let updated = QuestionModel::update(&state, &ctx.paths, &id, updates).await?;
     Ok(SuccessResponse::data(updated))
 }
 
 pub async fn delete_question(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if QuestionModel::find_by_id(&state, &id).await?.is_none() {
+    if QuestionModel::find_by_id(&state, &ctx.paths, &id)
+        .await?
+        .is_none()
+    {
         return Err(ApiError::bad_request("Question not found."));
     }
-    QuestionModel::delete(&state, &id).await?;
-    QuestionModel::invalidate_list_cache();
+    QuestionModel::delete(&state, &ctx.paths, &id).await?;
     Ok(SuccessResponse::message("Question deleted."))
 }

@@ -61,12 +61,42 @@ src/
 ├── lib.rs                   # Library crate (routes, models, middleware)
 ├── config.rs                # Environment configuration
 ├── routes.rs                # Axum router + middleware stack
+├── features/                # Campaign, locations, inventory (clean architecture)
+│   ├── campaigns/
+│   ├── locations/
+│   └── inventory/
 ├── controllers/             # HTTP handlers
-├── models/                  # Firestore repositories
+├── models/                  # Firestore repositories (campaign-scoped)
 ├── middleware/              # Auth, CSRF, rate limits, request context
 ├── services/                # Firestore + Firebase Auth clients
 └── utils/                   # Spin tokens, helpers, serialization
 ```
+
+---
+
+## Multi-campaign API
+
+All game data is scoped under a campaign, resolved by URL slug:
+
+| Audience | Route |
+|----------|-------|
+| Admin | `GET/POST /api/campaigns` |
+| Admin | `GET/PUT/DELETE /api/campaigns/{slug}` |
+| Public | `GET /api/campaigns/{slug}/questions` |
+| Public | `POST /api/campaigns/{slug}/registrations` (requires `lat`, `lng`) |
+| Public | `POST /api/campaigns/{slug}/submissions` |
+| Public | `POST /api/campaigns/{slug}/spin` |
+| Public | `GET /api/campaigns/{slug}/settings` |
+| Admin | `GET/POST /api/campaigns/{slug}/locations` |
+| Admin | `GET/PUT /api/campaigns/{slug}/inventory` |
+
+### Migration from single-tenant data
+
+```bash
+cargo run --bin migrate-to-campaigns -- --slug default --name "Legacy Campaign"
+```
+
+This creates a campaign, copies root collections into `campaigns/{id}/*` subcollections, adds a default geofence location, and seeds per-location inventory from `REAL_PRIZE_LIMIT` / `system/aggregates`.
 
 ---
 
@@ -84,7 +114,7 @@ Public routes use session IDs stored in Firestore; mutating `/api/*` routes requ
 cargo test
 ```
 
-Feature-level integration tests cover CSRF, spin tokens, helpers, auth bearer parsing, and admin allowlist logic.
+Feature-level integration tests cover CSRF, spin tokens, campaign context, geo validation, inventory staggering, and auth middleware.
 
 ---
 

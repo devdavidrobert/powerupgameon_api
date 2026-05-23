@@ -1,23 +1,25 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
+use crate::features::campaigns::infrastructure::CampaignPaths;
+use crate::features::inventory::infrastructure::InventoryRepository;
+use crate::models::prize::PrizeModel;
 use crate::models::question::QuestionModel;
 use crate::models::registration::RegistrationModel;
 use crate::utils::firestore::millis_now;
 use anyhow::anyhow;
 use firestore::errors::{
-    BackoffError, FirestoreDataNotFoundError, FirestoreError, FirestoreErrorPublicGenericDetails,
-    FirestoreInvalidParametersError, FirestoreInvalidParametersPublicDetails,
+    BackoffError, FirestoreError, FirestoreInvalidParametersError,
+    FirestoreInvalidParametersPublicDetails,
 };
 use firestore::FirestoreQueryDirection;
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
-const COLLECTION: &str = "submissions";
-const SESSIONS_COLLECTION: &str = "sessions";
-const AGGREGATES_COLLECTION: &str = "system";
-const AGGREGATES_DOC: &str = "aggregates";
+const SUBMISSIONS_SUBCOL: &str = "submissions";
+const SESSIONS_SUBCOL: &str = "sessions";
+const REGISTRATIONS_SUBCOL: &str = "registrations";
 
 pub struct SubmissionModel;
 
@@ -29,6 +31,8 @@ pub struct SubmissionCreateInput {
     pub answers: Vec<i64>,
     pub user_agent: String,
     pub ip: String,
+    pub location_id: Option<String>,
+    pub geo_status: String,
 }
 
 #[derive(Debug)]
@@ -38,13 +42,19 @@ pub struct FinalizeSpinResult {
 }
 
 impl SubmissionModel {
-    pub async fn find_by_id(state: &AppState, id: &str) -> ApiResult<Option<Map<String, Value>>> {
+    pub async fn find_by_id(
+        state: &AppState,
+        paths: &CampaignPaths,
+        id: &str,
+    ) -> ApiResult<Option<Map<String, Value>>> {
+        let parent = paths.parent_str(&state.db.client)?;
         state
             .db
             .client
             .fluent()
             .select()
-            .by_id_in(COLLECTION)
+            .by_id_in(SUBMISSIONS_SUBCOL)
+            .parent(parent)
             .obj()
             .one(id)
             .await
@@ -53,16 +63,19 @@ impl SubmissionModel {
 
     pub async fn find_page(
         state: &AppState,
+        paths: &CampaignPaths,
         limit: usize,
         _cursor: Option<Map<String, Value>>,
     ) -> ApiResult<(Vec<Map<String, Value>>, Option<Map<String, Value>>, bool)> {
+        let parent = paths.parent_str(&state.db.client)?;
         let cap = limit.clamp(1, 200);
         let items: Vec<Map<String, Value>> = state
             .db
             .client
             .fluent()
             .select()
-            .from(COLLECTION)
+            .from(SUBMISSIONS_SUBCOL)
+            .parent(parent)
             .order_by([
                 ("submittedAt", FirestoreQueryDirection::Descending),
                 ("__name__", FirestoreQueryDirection::Descending),
@@ -77,10 +90,14 @@ impl SubmissionModel {
         Ok((items, None, has_more))
     }
 
-    pub async fn ids_that_exist(state: &AppState, ids: &[String]) -> ApiResult<HashSet<String>> {
+    pub async fn ids_that_exist(
+        state: &AppState,
+        paths: &CampaignPaths,
+        ids: &[String],
+    ) -> ApiResult<HashSet<String>> {
         let mut existing = HashSet::new();
         for id in ids {
-            if Self::find_by_id(state, id).await?.is_some() {
+            if Self::find_by_id(state, paths, id).await?.is_some() {
                 existing.insert(id.clone());
             }
         }
@@ -89,56 +106,41 @@ impl SubmissionModel {
 
     pub async fn find_for_raffle_pool(
         state: &AppState,
+        paths: &CampaignPaths,
         min_score: i64,
         prize_winners_only: bool,
     ) -> ApiResult<Vec<Map<String, Value>>> {
+        let parent = paths.parent_str(&state.db.client)?;
         let rows: Vec<Map<String, Value>> = if min_score > 0 {
             state
                 .db
                 .client
                 .fluent()
                 .select()
-                .from(COLLECTION)
+                .from(SUBMISSIONS_SUBCOL)
+                .parent(parent)
                 .filter(|q| q.field("score").greater_than_or_equal(min_score))
                 .obj::<Map<String, Value>>()
                 .query()
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?
-        } else if prize_winners_only {
-            state
-                .db
-                .client
-                .fluent()
-                .select()
-                .from(COLLECTION)
-                .obj::<Map<String, Value>>()
-                .query()
-                .await
-                .map_err(|e| ApiError::Internal(e.into()))?
-                .into_iter()
-                .filter(|s: &Map<String, Value>| {
-                    matches!(
-                        s.get("prize").and_then(|v| v.as_str()),
-                        Some(p) if p != "Nothing" && p != "pending"
-                    )
-                })
-                .collect()
         } else {
             state
                 .db
                 .client
                 .fluent()
                 .select()
-                .from(COLLECTION)
-                .obj()
+                .from(SUBMISSIONS_SUBCOL)
+                .parent(parent)
+                .obj::<Map<String, Value>>()
                 .query()
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?
         };
 
-        Ok(if prize_winners_only && min_score > 0 {
+        Ok(if prize_winners_only {
             rows.into_iter()
-                .filter(|s: &Map<String, Value>| {
+                .filter(|s| {
                     matches!(
                         s.get("prize").and_then(|v| v.as_str()),
                         Some(p) if p != "Nothing" && p != "pending"
@@ -150,79 +152,26 @@ impl SubmissionModel {
         })
     }
 
-    pub async fn get_prize_counts(state: &AppState) -> ApiResult<HashMap<String, i64>> {
-        let doc: Option<Map<String, Value>> = state
-            .db
-            .client
-            .fluent()
-            .select()
-            .by_id_in(AGGREGATES_COLLECTION)
-            .obj()
-            .one(AGGREGATES_DOC)
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-
-        if let Some(doc) = doc {
-            if let Some(counts) = doc.get("prizeAwardCounts").and_then(|v| v.as_object()) {
-                if !counts.is_empty() {
-                    return Ok(counts
-                        .iter()
-                        .filter_map(|(k, v)| v.as_i64().map(|n| (k.clone(), n)))
-                        .collect());
-                }
-            }
-        }
-
-        Self::rebuild_prize_award_counts(state).await
-    }
-
-    pub async fn rebuild_prize_award_counts(state: &AppState) -> ApiResult<HashMap<String, i64>> {
-        let snap: Vec<Map<String, Value>> = state
-            .db
-            .client
-            .fluent()
-            .select()
-            .from(COLLECTION)
-            .obj()
-            .query()
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-
-        let mut counts: HashMap<String, i64> = HashMap::new();
-        for doc in snap {
-            if let Some(prize) = doc.get("prize").and_then(|v| v.as_str()) {
-                if prize != "pending" && prize != "Nothing" {
-                    *counts.entry(prize.to_string()).or_insert(0) += 1;
-                }
-            }
-        }
-
-        state
-            .db
-            .client
-            .fluent()
-            .update()
-            .in_col(AGGREGATES_COLLECTION)
-            .document_id(AGGREGATES_DOC)
-            .object(&json!({
-                "prizeAwardCounts": counts,
-                "rebuiltAt": millis_now(),
-            }))
-            .execute::<Map<String, Value>>()
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-
-        Ok(counts)
-    }
-
-    pub async fn create(state: &AppState, input: SubmissionCreateInput) -> ApiResult<Map<String, Value>> {
-        let questions = QuestionModel::find_all(state).await?;
+    pub async fn create(
+        state: &AppState,
+        paths: &CampaignPaths,
+        input: SubmissionCreateInput,
+    ) -> ApiResult<Map<String, Value>> {
+        let questions = QuestionModel::find_all(state, paths).await?;
         if questions.is_empty() {
             return Err(ApiError::WithStatus {
                 status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 message: "No questions configured.".into(),
                 code: Some("NO_QUESTIONS".into()),
             });
+        }
+
+        if input.geo_status == "outside" {
+            return Err(ApiError::with_code(
+                axum::http::StatusCode::FORBIDDEN,
+                "GEO_OUTSIDE_ZONE",
+                "Participation is restricted to allowed geographic zones.",
+            ));
         }
 
         if input.answers.len() != questions.len() {
@@ -259,6 +208,7 @@ impl SubmissionModel {
         let prize = if score == total { "pending" } else { "Nothing" };
         let status = if prize == "pending" { "pending" } else { "completed" };
 
+        let parent = paths.parent_str(&state.db.client)?;
         let db = state.db.client.clone();
         let session_id = input.session_id.clone();
         let payload = json!({
@@ -272,6 +222,8 @@ impl SubmissionModel {
             "answers": input.answers,
             "userAgent": input.user_agent,
             "ip": input.ip,
+            "locationId": input.location_id,
+            "geoStatus": input.geo_status,
             "status": status,
             "submittedAt": millis_now(),
         });
@@ -280,11 +232,13 @@ impl SubmissionModel {
         let payload_for_tx = payload.clone();
         let prize_owned = prize.to_string();
         let status_owned = status.to_string();
+        let parent_for_tx = parent.clone();
         let result = db
             .run_transaction(move |db, transaction| {
                 create_tx(
                     db,
                     transaction,
+                    parent_for_tx.clone(),
                     session_id_for_tx.clone(),
                     payload_for_tx.clone(),
                     score,
@@ -299,109 +253,64 @@ impl SubmissionModel {
         Ok(result)
     }
 
-    pub async fn finalize_spin_prize(
-        state: &AppState,
-        session_id: &str,
-        prize_name: &str,
-        is_real_prize: bool,
-    ) -> ApiResult<FinalizeSpinResult> {
-        let db = state.db.client.clone();
-        let session_id = session_id.to_string();
-        let prize_name = prize_name.to_string();
+    pub async fn delete(state: &AppState, paths: &CampaignPaths, id: &str) -> ApiResult<()> {
+        let sub = Self::find_by_id(state, paths, id).await?;
+        let reg = RegistrationModel::find_by_id(state, paths, id).await?;
 
-        db.run_transaction(move |db, transaction| {
-            finalize_tx(
-                db,
-                transaction,
-                session_id.clone(),
-                prize_name.clone(),
-                is_real_prize,
-            )
-        })
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))
-    }
-
-    pub async fn delete(state: &AppState, id: &str) -> ApiResult<()> {
-        let sub = Self::find_by_id(state, id).await?;
-        let reg = RegistrationModel::find_by_id(state, id).await?;
-
-        let mut decrement_prize = None;
+        let mut decrement: Option<(String, String)> = None;
         if let Some(sub) = &sub {
-            if let Some(prize) = sub.get("prize").and_then(|v| v.as_str()) {
-                if prize != "pending" && prize != "Nothing" {
-                    let prizes = crate::models::prize::PrizeModel::find_all(state).await?;
-                    if prizes.iter().any(|p| {
-                        p.get("name").and_then(|n| n.as_str()) == Some(prize)
+            if let (Some(prize_name), Some(location_id)) = (
+                sub.get("prize").and_then(|v| v.as_str()),
+                sub.get("locationId").and_then(|v| v.as_str()),
+            ) {
+                if prize_name != "pending" && prize_name != "Nothing" {
+                    let prizes = PrizeModel::find_all(state, paths).await?;
+                    if let Some(prize) = prizes.iter().find(|p| {
+                        p.get("name").and_then(|n| n.as_str()) == Some(prize_name)
                             && p.get("isRealPrize").and_then(|v| v.as_bool()).unwrap_or(true)
                     }) {
-                        decrement_prize = Some(prize.to_string());
+                        if let Some(prize_id) = prize.get("id").and_then(|v| v.as_str()) {
+                            decrement = Some((location_id.to_string(), prize_id.to_string()));
+                        }
                     }
                 }
             }
         }
 
+        let parent = paths.parent_str(&state.db.client)?;
         let writer = state.db.batch_writer().await.map_err(|e| ApiError::Internal(e.into()))?;
         let mut batch = writer.new_batch();
 
-        delete_in_batch(&state.db.client, &mut batch, COLLECTION, id)?;
-        delete_in_batch(&state.db.client, &mut batch, SESSIONS_COLLECTION, id)?;
+        delete_in_batch(&state.db.client, &mut batch, parent.as_str(), SUBMISSIONS_SUBCOL, id)?;
+        delete_in_batch(&state.db.client, &mut batch, parent.as_str(), SESSIONS_SUBCOL, id)?;
 
         if reg.is_some() {
-            delete_in_batch(&state.db.client, &mut batch, "registrations", id)?;
+            delete_in_batch(
+                &state.db.client,
+                &mut batch,
+                parent.as_str(),
+                REGISTRATIONS_SUBCOL,
+                id,
+            )?;
             if let Some(reg) = reg {
                 if let Some(normalized) = reg.get("normalizedName").and_then(|v| v.as_str()) {
                     delete_in_batch(
                         &state.db.client,
                         &mut batch,
-                        "registrations",
+                        parent.as_str(),
+                        REGISTRATIONS_SUBCOL,
                         &format!("name_{normalized}"),
                     )?;
                 }
             }
         }
 
-        if let Some(prize) = decrement_prize {
-            let stats: Option<Map<String, Value>> = state
-                .db
-                .client
-                .fluent()
-                .select()
-                .by_id_in(AGGREGATES_COLLECTION)
-                .obj()
-                .one(AGGREGATES_DOC)
-                .await
-                .map_err(|e| ApiError::Internal(e.into()))?;
+        batch.write().await.map_err(|e| ApiError::Internal(e.into()))?;
 
-            let mut prev = stats
-                .as_ref()
-                .and_then(|d| d.get("prizeAwardCounts"))
-                .and_then(|v| v.as_object())
-                .cloned()
-                .unwrap_or_default();
-            let current = prev.get(&prize).and_then(|v| v.as_i64()).unwrap_or(0);
-            if current <= 1 {
-                prev.remove(&prize);
-            } else {
-                prev.insert(prize.clone(), json!(current - 1));
-            }
-
-            state
-                .db
-                .client
-                .fluent()
-                .update()
-                .in_col(AGGREGATES_COLLECTION)
-                .document_id(AGGREGATES_DOC)
-                .object(&json!({
-                    "prizeAwardCounts": prev,
-                    "updatedAt": millis_now(),
-                }))
-                .add_to_batch(&mut batch)
-                .map_err(|e| ApiError::Internal(e.into()))?;
+        if let Some((location_id, prize_id)) = decrement {
+            InventoryRepository::decrement_on_delete(state, paths, &location_id, &prize_id).await?;
         }
 
-        batch.write().await.map_err(|e| ApiError::Internal(e.into()))?;
         Ok(())
     }
 }
@@ -409,6 +318,7 @@ impl SubmissionModel {
 fn create_tx<'b>(
     db: firestore::FirestoreDb,
     transaction: &'b mut firestore::FirestoreTransaction,
+    parent: String,
     session_id: String,
     payload: Value,
     score: i64,
@@ -422,7 +332,8 @@ fn create_tx<'b>(
         let session_doc: Option<Map<String, Value>> = db
             .fluent()
             .select()
-            .by_id_in(SESSIONS_COLLECTION)
+            .by_id_in(SESSIONS_SUBCOL)
+            .parent(parent.as_str())
             .obj()
             .one(&session_id)
             .await
@@ -439,7 +350,8 @@ fn create_tx<'b>(
         let sub_doc: Option<Map<String, Value>> = db
             .fluent()
             .select()
-            .by_id_in(COLLECTION)
+            .by_id_in(SUBMISSIONS_SUBCOL)
+            .parent(parent.as_str())
             .obj()
             .one(&session_id)
             .await
@@ -452,16 +364,18 @@ fn create_tx<'b>(
 
         db.fluent()
             .update()
-            .in_col(COLLECTION)
+            .in_col(SUBMISSIONS_SUBCOL)
             .document_id(&session_id)
+            .parent(parent.as_str())
             .object(&payload)
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
 
         db.fluent()
             .update()
-            .in_col(SESSIONS_COLLECTION)
+            .in_col(SESSIONS_SUBCOL)
             .document_id(&session_id)
+            .parent(parent.as_str())
             .object(&json!({
                 "hasPlayed": true,
                 "playedAt": millis_now(),
@@ -479,109 +393,17 @@ fn create_tx<'b>(
     })
 }
 
-fn finalize_tx<'b>(
-    db: firestore::FirestoreDb,
-    transaction: &'b mut firestore::FirestoreTransaction,
-    session_id: String,
-    prize_name: String,
-    is_real_prize: bool,
-) -> Pin<Box<dyn Future<Output = Result<FinalizeSpinResult, BackoffError<FirestoreError>>> + Send + 'b>> {
-    Box::pin(async move {
-        let sub_doc: Option<Map<String, Value>> = db
-            .fluent()
-            .select()
-            .by_id_in(COLLECTION)
-            .obj()
-            .one(&session_id)
-            .await
-            .map_err(BackoffError::Permanent)?;
-        let Some(sub) = sub_doc else {
-            return Err(BackoffError::Permanent(FirestoreError::DataNotFoundError(
-                FirestoreDataNotFoundError::new(
-                    FirestoreErrorPublicGenericDetails::new("NOT_FOUND".to_string()),
-                    "Submission not found".to_string(),
-                ),
-            )));
-        };
-
-        if let Some(existing_prize) = sub.get("prize").and_then(|v| v.as_str()) {
-            if existing_prize != "pending" {
-                return Ok(FinalizeSpinResult {
-                    finalized: false,
-                    previous_prize: Some(existing_prize.to_string()),
-                });
-            }
-        }
-
-        let now = millis_now();
-        db.fluent()
-            .update()
-            .in_col(COLLECTION)
-            .document_id(&session_id)
-            .object(&json!({
-                "prize": prize_name,
-                "status": "completed",
-                "finalizedAt": now,
-            }))
-            .add_to_transaction(transaction)
-            .map_err(BackoffError::Permanent)?;
-
-        db.fluent()
-            .update()
-            .in_col(SESSIONS_COLLECTION)
-            .document_id(&session_id)
-            .object(&json!({
-                "prize": prize_name,
-                "status": "completed",
-            }))
-            .add_to_transaction(transaction)
-            .map_err(BackoffError::Permanent)?;
-
-        if is_real_prize {
-            let stats: Option<Map<String, Value>> = db
-                .fluent()
-                .select()
-                .by_id_in(AGGREGATES_COLLECTION)
-                .obj()
-                .one(AGGREGATES_DOC)
-                .await
-                .map_err(BackoffError::Permanent)?;
-            let mut prev = stats
-                .as_ref()
-                .and_then(|d| d.get("prizeAwardCounts"))
-                .and_then(|v| v.as_object())
-                .cloned()
-                .unwrap_or_default();
-            let current = prev.get(&prize_name).and_then(|v| v.as_i64()).unwrap_or(0);
-            prev.insert(prize_name.clone(), json!(current + 1));
-            db.fluent()
-                .update()
-                .in_col(AGGREGATES_COLLECTION)
-                .document_id(AGGREGATES_DOC)
-                .object(&json!({
-                    "prizeAwardCounts": prev,
-                    "updatedAt": now,
-                }))
-                .add_to_transaction(transaction)
-                .map_err(BackoffError::Permanent)?;
-        }
-
-        Ok(FinalizeSpinResult {
-            finalized: true,
-            previous_prize: None,
-        })
-    })
-}
-
 fn delete_in_batch(
     db: &firestore::FirestoreDb,
     batch: &mut firestore::FirestoreBatch<'_, firestore::FirestoreSimpleBatchWriter>,
+    parent: &str,
     collection: &str,
     id: &str,
 ) -> ApiResult<()> {
     db.fluent()
         .delete()
         .from(collection)
+        .parent(parent)
         .document_id(id)
         .add_to_batch(batch)
         .map_err(|e| ApiError::Internal(e.into()))?;

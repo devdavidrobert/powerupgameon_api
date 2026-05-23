@@ -1,9 +1,11 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
+use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
+use crate::models::registration::RegistrationModel;
 use crate::models::submission::{SubmissionCreateInput, SubmissionModel};
-use crate::utils::challenge_window::assert_challenge_open;
+use crate::utils::challenge_window::assert_challenge_open_for_campaign;
 use crate::utils::client_ip::get_client_ip;
 use crate::utils::firestore::serialize_doc_data;
 use crate::utils::helpers::{decode_cursor, encode_cursor, normalize_name};
@@ -38,6 +40,7 @@ pub struct CreateSubmissionBody {
 
 pub async fn get_all_submissions(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Query(query): Query<SubmissionQuery>,
 ) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
     let limit = query.limit.unwrap_or(50);
@@ -48,7 +51,7 @@ pub async fn get_all_submissions(
         .and_then(|v| v.as_object().cloned());
 
     let (items, next_cursor, has_more) =
-        SubmissionModel::find_page(&state, limit, cursor).await?;
+        SubmissionModel::find_page(&state, &ctx.paths, limit, cursor).await?;
 
     let data: Vec<Map<String, Value>> = items
         .into_iter()
@@ -76,9 +79,10 @@ pub async fn get_all_submissions(
 
 pub async fn get_submission(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
-    let sub = SubmissionModel::find_by_id(&state, &id)
+    let sub = SubmissionModel::find_by_id(&state, &ctx.paths, &id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Submission not found."))?;
     let mut out = serialize_doc_data(&sub);
@@ -88,7 +92,8 @@ pub async fn get_submission(
 
 pub async fn create_submission(
     State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<RequestContext>,
+    PublicCampaignContext(ctx): PublicCampaignContext,
+    Extension(req_ctx): Extension<RequestContext>,
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateSubmissionBody>,
 ) -> ApiResult<(StatusCode, Json<SuccessResponse<Value>>)> {
@@ -128,7 +133,21 @@ pub async fn create_submission(
         sanitized.push(n);
     }
 
-    assert_challenge_open(&state).await?;
+    assert_challenge_open_for_campaign(&ctx.campaign)?;
+
+    let registration = RegistrationModel::find_by_id(&state, &ctx.paths, session_id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("Registration not found for this session."))?;
+
+    let location_id = registration
+        .get("locationId")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let geo_status = registration
+        .get("geoStatus")
+        .and_then(|v| v.as_str())
+        .unwrap_or("no_zones")
+        .to_string();
 
     let ua = body
         .user_agent
@@ -141,6 +160,7 @@ pub async fn create_submission(
 
     let result = SubmissionModel::create(
         &state,
+        &ctx.paths,
         SubmissionCreateInput {
             session_id: session_id.to_string(),
             full_name: full_name.to_string(),
@@ -148,10 +168,12 @@ pub async fn create_submission(
             answers: sanitized,
             user_agent: ua,
             ip,
+            location_id,
+            geo_status,
         },
     )
     .await
-    .map_err(|e| map_create_error(e, &ctx))?;
+    .map_err(|e| map_create_error(e, &req_ctx))?;
 
     let mut payload = serialize_doc_data(&result);
     payload.insert(
@@ -166,7 +188,7 @@ pub async fn create_submission(
     if result.get("prize").and_then(|v| v.as_str()) == Some("pending")
         && result.get("status").and_then(|v| v.as_str()) == Some("pending")
     {
-        match mint_spin_token(&state.config, session_id) {
+        match mint_spin_token(&state.config, ctx.campaign_id(), session_id) {
             Ok(token) => {
                 payload.insert("spinToken".into(), json!(token));
             }
@@ -175,7 +197,7 @@ pub async fn create_submission(
                     &state.config,
                     "error",
                     "spin_token_mint_failed",
-                    json!({ "requestId": ctx.request_id, "err": err.to_string() }),
+                    json!({ "requestId": req_ctx.request_id, "err": err.to_string() }),
                 );
                 return Err(err);
             }
@@ -200,12 +222,16 @@ pub async fn create_submission(
 
 pub async fn delete_submission(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if SubmissionModel::find_by_id(&state, &id).await?.is_none() {
+    if SubmissionModel::find_by_id(&state, &ctx.paths, &id)
+        .await?
+        .is_none()
+    {
         return Err(ApiError::bad_request("Submission not found."));
     }
-    SubmissionModel::delete(&state, &id).await?;
+    SubmissionModel::delete(&state, &ctx.paths, &id).await?;
     Ok(SuccessResponse::message(
         "Submission and linked registration records deleted.",
     ))

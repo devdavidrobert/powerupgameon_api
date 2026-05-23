@@ -1,10 +1,11 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
+use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
-use crate::models::registration::RegistrationModel;
+use crate::models::registration::{RegistrationInput, RegistrationModel};
 use crate::models::submission::SubmissionModel;
-use crate::utils::challenge_window::assert_challenge_open;
+use crate::utils::challenge_window::assert_challenge_open_for_campaign;
 use crate::utils::client_ip::get_client_ip;
 use crate::utils::firestore::serialize_doc_data;
 use crate::utils::helpers::{decode_cursor, encode_cursor, normalize_name};
@@ -33,10 +34,13 @@ pub struct RegisterBody {
     pub session_id: Option<String>,
     #[serde(rename = "userAgent")]
     pub user_agent: Option<String>,
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
 }
 
 pub async fn get_all_registrations(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Query(query): Query<RegistrationQuery>,
 ) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
     let limit = query.limit.unwrap_or(50);
@@ -47,13 +51,13 @@ pub async fn get_all_registrations(
         .and_then(|v| v.as_object().cloned());
 
     let (items, next_cursor, has_more) =
-        RegistrationModel::find_player_page(&state, limit, cursor).await?;
+        RegistrationModel::find_player_page(&state, &ctx.paths, limit, cursor).await?;
     let ids: Vec<String> = items
         .iter()
         .filter_map(|r| r.get("id").or_else(|| r.get("sessionId")).and_then(|v| v.as_str()))
         .map(String::from)
         .collect();
-    let completed = SubmissionModel::ids_that_exist(&state, &ids).await?;
+    let completed = SubmissionModel::ids_that_exist(&state, &ctx.paths, &ids).await?;
 
     let enriched: Vec<Map<String, Value>> = items
         .into_iter()
@@ -90,7 +94,8 @@ pub async fn get_all_registrations(
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<RequestContext>,
+    PublicCampaignContext(ctx): PublicCampaignContext,
+    Extension(req_ctx): Extension<RequestContext>,
     headers: axum::http::HeaderMap,
     Json(body): Json<RegisterBody>,
 ) -> ApiResult<(StatusCode, Json<SuccessResponse<Value>>)> {
@@ -102,7 +107,14 @@ pub async fn register(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::bad_request("sessionId is required."))?;
 
-    assert_challenge_open(&state).await?;
+    let lat = body
+        .lat
+        .ok_or_else(|| ApiError::bad_request("lat is required."))?;
+    let lng = body
+        .lng
+        .ok_or_else(|| ApiError::bad_request("lng is required."))?;
+
+    assert_challenge_open_for_campaign(&ctx.campaign)?;
 
     let first = body.first_name.as_ref().unwrap().trim();
     let last = body.last_name.as_ref().unwrap().trim();
@@ -116,13 +128,29 @@ pub async fn register(
         .unwrap_or("unknown")
         .to_string();
 
+    let (location_id, geo_status) = RegistrationModel::resolve_geo(
+        &state,
+        &ctx.paths,
+        ctx.campaign.geo_enforcement,
+        lat,
+        lng,
+    )
+    .await?;
+
     RegistrationModel::register(
         &state,
-        session_id,
-        &full_name,
-        &normalized,
-        &ip,
-        &user_agent,
+        &ctx.paths,
+        RegistrationInput {
+            session_id: session_id.to_string(),
+            full_name: full_name.clone(),
+            normalized_name: normalized,
+            ip,
+            user_agent,
+            lat,
+            lng,
+            location_id,
+            geo_status,
+        },
     )
     .await
     .map_err(|e| {
@@ -144,7 +172,11 @@ pub async fn register(
         &state.config,
         "info",
         "registration_ok",
-        json!({ "requestId": ctx.request_id, "sessionId": session_id }),
+        json!({
+            "requestId": req_ctx.request_id,
+            "sessionId": session_id,
+            "campaignSlug": ctx.slug(),
+        }),
     );
 
     Ok((
@@ -165,12 +197,16 @@ pub async fn register(
 
 pub async fn delete_registration(
     State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if RegistrationModel::find_by_id(&state, &id).await?.is_none() {
+    if RegistrationModel::find_by_id(&state, &ctx.paths, &id)
+        .await?
+        .is_none()
+    {
         return Err(ApiError::bad_request("Registration not found."));
     }
-    RegistrationModel::delete(&state, &id).await?;
+    RegistrationModel::delete(&state, &ctx.paths, &id).await?;
     Ok(SuccessResponse::message(
         "Registration deleted. Player can now replay.",
     ))

@@ -68,3 +68,7 @@ path = "src/bin/set_auth_admin_claim.rs"
 [[bin]]
 name = "update-auth-user-email"
 path = "src/bin/update_auth_user_email.rs"
+
+[[bin]]
+name = "migrate-to-campaigns"
+path = "src/bin/migrate_to_campaigns.rs"
