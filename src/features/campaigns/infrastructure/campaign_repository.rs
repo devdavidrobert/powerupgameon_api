@@ -97,8 +97,8 @@ impl CampaignRepository {
             .db
             .client
             .fluent()
-            .update()
-            .in_col(CAMPAIGNS_COLLECTION)
+            .insert()
+            .into(CAMPAIGNS_COLLECTION)
             .document_id(&id)
             .object(&payload)
             .execute::<Map<String, Value>>()
@@ -111,7 +111,25 @@ impl CampaignRepository {
     }
 
     pub async fn update(state: &AppState, id: &str, data: Map<String, Value>) -> ApiResult<Campaign> {
-        let mut payload = data;
+        let Some(mut payload): Option<Map<String, Value>> = state
+            .db
+            .client
+            .fluent()
+            .select()
+            .by_id_in(CAMPAIGNS_COLLECTION)
+            .obj()
+            .one(id)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?
+        else {
+            return Err(ApiError::bad_request("Campaign not found."));
+        };
+
+        payload.retain(|key, _| !key.starts_with('_'));
+        for (key, value) in data {
+            payload.insert(key, value);
+        }
+        payload.insert("id".into(), json!(id));
         payload.insert("updatedAt".into(), json!(millis_now()));
 
         state

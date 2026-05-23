@@ -30,11 +30,11 @@ pub async fn build_app() -> anyhow::Result<Router> {
 
 /// Install TLS/JWT crypto providers required by Firestore (gcloud-sdk) before any network I/O.
 pub fn init_crypto_providers() -> anyhow::Result<()> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
-    jsonwebtoken_v10::crypto::aws_lc::DEFAULT_PROVIDER
-        .install_default()
-        .map_err(|_| anyhow::anyhow!("Failed to install jsonwebtoken crypto provider"))?;
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = jsonwebtoken_v10::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
+    });
     Ok(())
 }

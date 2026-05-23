@@ -114,8 +114,8 @@ async fn create_campaign(db: &FirestoreService, slug: &str, name: &str) -> Resul
     let now = chrono::Utc::now().timestamp_millis();
     db.client
         .fluent()
-        .update()
-        .in_col("campaigns")
+        .insert()
+        .into("campaigns")
         .document_id(&id)
         .object(&json!({
             "id": id,
