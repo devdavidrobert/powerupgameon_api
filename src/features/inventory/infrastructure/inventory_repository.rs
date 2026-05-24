@@ -383,16 +383,13 @@ fn claim_tx<'b>(
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
 
+        let submission_update = merge_submission_spin_fields(&sub, &prize_name, now);
         db.fluent()
             .update()
             .in_col(SUBMISSIONS_SUBCOL)
             .document_id(&session_id)
             .parent(parent.as_str())
-            .object(&json!({
-                "prize": prize_name,
-                "status": "completed",
-                "finalizedAt": now,
-            }))
+            .object(&submission_update)
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
 
@@ -413,6 +410,24 @@ fn claim_tx<'b>(
             previous_prize: None,
         })
     })
+}
+
+/// Firestore `.update().object()` replaces the whole document in our client — merge fields
+/// so quiz scores, names, and `submittedAt` survive spin finalization (admin list depends on them).
+fn merge_submission_spin_fields(
+    existing: &Map<String, Value>,
+    prize_name: &str,
+    finalized_at: i64,
+) -> Map<String, Value> {
+    let mut merged: Map<String, Value> = existing
+        .iter()
+        .filter(|(k, _)| !k.starts_with("_firestore"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    merged.insert("prize".into(), json!(prize_name));
+    merged.insert("status".into(), json!("completed"));
+    merged.insert("finalizedAt".into(), json!(finalized_at));
+    merged
 }
 
 fn map_slot(doc: Map<String, Value>) -> Option<InventorySlot> {

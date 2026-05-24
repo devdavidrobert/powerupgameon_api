@@ -54,19 +54,52 @@ pub async fn get_all_submissions(
     let (items, next_cursor, has_more) =
         SubmissionModel::find_page(&state, &ctx.paths, limit, cursor).await?;
 
-    let data: Vec<Map<String, Value>> = items
-        .into_iter()
-        .map(|row| {
-            let id = row
-                .get("id")
-                .or_else(|| row.get("sessionId"))
-                .cloned()
-                .unwrap_or(Value::Null);
-            let mut out = serialize_doc_data(&row);
-            out.insert("id".into(), id);
-            out
-        })
-        .collect();
+    let mut data: Vec<Map<String, Value>> = Vec::with_capacity(items.len());
+    for row in items {
+        let id = row
+            .get("id")
+            .or_else(|| row.get("sessionId"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| {
+                row.get("_firestore_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            });
+
+        if let Some(ref submission_id) = id {
+            let _ = SubmissionModel::repair_list_index_fields(&state, &ctx.paths, submission_id, &row)
+                .await;
+
+            if row.get("fullName").is_none() {
+                if let Ok(Some(reg)) =
+                    RegistrationModel::find_by_id(&state, &ctx.paths, submission_id).await
+                {
+                    let mut enriched = row.clone();
+                    if let Some(name) = reg.get("fullName") {
+                        enriched.insert("fullName".into(), name.clone());
+                    }
+                    if let Some(geo) = reg.get("geoStatus") {
+                        enriched.insert("geoStatus".into(), geo.clone());
+                    }
+                    if let Some(loc) = reg.get("locationId") {
+                        enriched.insert("locationId".into(), loc.clone());
+                    }
+                    let mut out = serialize_doc_data(&enriched);
+                    out.insert("id".into(), json!(submission_id));
+                    data.push(out);
+                    continue;
+                }
+            }
+        }
+
+        let id_value = id
+            .map(|s| json!(s))
+            .unwrap_or(Value::Null);
+        let mut out = serialize_doc_data(&row);
+        out.insert("id".into(), id_value);
+        data.push(out);
+    }
 
     Ok(Json(SuccessResponse {
         success: true,

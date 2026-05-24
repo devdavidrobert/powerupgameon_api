@@ -6,7 +6,9 @@ use crate::features::locations::domain::GeoStatus;
 use crate::models::prize::PrizeModel;
 use crate::models::question::QuestionModel;
 use crate::models::registration::RegistrationModel;
-use crate::utils::firestore::{build_page_cursor, millis_now, start_after_cursor};
+use crate::utils::firestore::{
+    build_page_cursor, document_id_from_map, millis_from_value, millis_now, start_after_cursor,
+};
 use crate::utils::firestore_tx::tx_get_optional;
 use anyhow::anyhow;
 use firestore::errors::{
@@ -71,6 +73,26 @@ impl SubmissionModel {
         limit: usize,
         cursor: Option<Map<String, Value>>,
     ) -> ApiResult<(Vec<Map<String, Value>>, Option<Map<String, Value>>, bool)> {
+        let (mut items, next_cursor, has_more) =
+            Self::find_page_ordered_by_submitted_at(state, paths, limit, cursor.clone()).await?;
+
+        // Legacy rows: spin finalization used to replace the whole doc and drop `submittedAt`,
+        // so they are invisible to the composite index query above.
+        if items.is_empty() && cursor.is_none() {
+            let fallback = Self::find_page_by_document_name(state, paths, limit, None).await?;
+            items = fallback.0;
+            return Ok((items, fallback.1, fallback.2));
+        }
+
+        Ok((items, next_cursor, has_more))
+    }
+
+    async fn find_page_ordered_by_submitted_at(
+        state: &AppState,
+        paths: &CampaignPaths,
+        limit: usize,
+        cursor: Option<Map<String, Value>>,
+    ) -> ApiResult<(Vec<Map<String, Value>>, Option<Map<String, Value>>, bool)> {
         let parent = paths.parent_str(&state.db.client)?;
         let cap = limit.clamp(1, 200);
         let query_limit = (cap + 1) as u32;
@@ -110,6 +132,95 @@ impl SubmissionModel {
             None
         };
         Ok((items, next_cursor, has_more))
+    }
+
+    /// Lists every submission document (including legacy rows missing `submittedAt`).
+    async fn find_page_by_document_name(
+        state: &AppState,
+        paths: &CampaignPaths,
+        limit: usize,
+        cursor: Option<Map<String, Value>>,
+    ) -> ApiResult<(Vec<Map<String, Value>>, Option<Map<String, Value>>, bool)> {
+        let parent = paths.parent_str(&state.db.client)?;
+        let cap = limit.clamp(1, 200);
+        let query_limit = (cap + 1) as u32;
+
+        let mut query = state
+            .db
+            .client
+            .fluent()
+            .select()
+            .from(SUBMISSIONS_SUBCOL)
+            .parent(parent.as_str())
+            .order_by([("__name__", FirestoreQueryDirection::Descending)]);
+
+        if let Some(ref cursor_map) = cursor {
+            query = query.start_at(start_after_cursor(cursor_map, "submittedAt")?);
+        }
+
+        let mut items: Vec<Map<String, Value>> = query
+            .limit(query_limit)
+            .obj()
+            .query()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        items.sort_by(|a, b| list_sort_timestamp(b).cmp(&list_sort_timestamp(a)));
+
+        let has_more = items.len() > cap;
+        if has_more {
+            items.truncate(cap);
+        }
+        let next_cursor = if has_more {
+            items.last().and_then(|row| list_page_cursor(row, parent.as_str()))
+        } else {
+            None
+        };
+        Ok((items, next_cursor, has_more))
+    }
+
+    /// Backfill `submittedAt` on legacy spin-wiped rows so they appear in the indexed list query.
+    pub async fn repair_list_index_fields(
+        state: &AppState,
+        paths: &CampaignPaths,
+        id: &str,
+        row: &Map<String, Value>,
+    ) -> ApiResult<()> {
+        if row.get("submittedAt").and_then(millis_from_value).is_some() {
+            return Ok(());
+        }
+        let Some(ts) = row
+            .get("finalizedAt")
+            .and_then(millis_from_value)
+            .or_else(|| row.get("_firestore_created").and_then(|v| v.as_str()).and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .ok()
+                    .map(|dt| dt.timestamp_millis())
+            }))
+        else {
+            return Ok(());
+        };
+
+        let parent = paths.parent_str(&state.db.client)?;
+        let mut patch: Map<String, Value> = row
+            .iter()
+            .filter(|(k, _)| !k.starts_with("_firestore"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        patch.insert("submittedAt".into(), json!(ts));
+        state
+            .db
+            .client
+            .fluent()
+            .update()
+            .in_col(SUBMISSIONS_SUBCOL)
+            .document_id(id)
+            .parent(parent.as_str())
+            .object(&patch)
+            .execute::<Map<String, Value>>()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+        Ok(())
     }
 
     pub async fn ids_that_exist(
@@ -498,6 +609,23 @@ fn create_tx<'b>(
         out.insert("id".into(), json!(session_id));
         Ok(out)
     })
+}
+
+fn list_sort_timestamp(row: &Map<String, Value>) -> i64 {
+    row.get("submittedAt")
+        .and_then(millis_from_value)
+        .or_else(|| row.get("finalizedAt").and_then(millis_from_value))
+        .unwrap_or(0)
+}
+
+fn list_page_cursor(row: &Map<String, Value>, parent: &str) -> Option<Map<String, Value>> {
+    let ts = list_sort_timestamp(row);
+    let id = document_id_from_map(row)?;
+    let name = crate::utils::firestore::document_ref_path(parent, SUBMISSIONS_SUBCOL, &id);
+    let mut cursor = Map::new();
+    cursor.insert("submittedAt".into(), json!(ts));
+    cursor.insert("name".into(), json!(name));
+    Some(cursor)
 }
 
 fn map_submission_error(err: FirestoreError) -> ApiError {
