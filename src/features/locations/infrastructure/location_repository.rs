@@ -26,7 +26,17 @@ impl LocationRepository {
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        Ok(rows.into_iter().filter_map(map_location).collect())
+        Ok(rows
+            .into_iter()
+            .filter_map(|mut row| {
+                if !row.contains_key("id") {
+                    if let Some(id) = doc_id(&row) {
+                        row.insert("id".into(), json!(id));
+                    }
+                }
+                map_location(row)
+            })
+            .collect())
     }
 
     pub async fn find_by_id(
@@ -42,12 +52,15 @@ impl LocationRepository {
             .select()
             .by_id_in(LOCATIONS_SUBCOL)
             .parent(parent)
-            .obj()
+            .obj::<Map<String, Value>>()
             .one(id)
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        Ok(doc.and_then(map_location))
+        Ok(doc.and_then(|mut row| {
+            row.entry("id").or_insert_with(|| json!(id));
+            map_location(row)
+        }))
     }
 
     pub async fn create(
@@ -85,9 +98,16 @@ impl LocationRepository {
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        Self::find_by_id(state, paths, &id)
-            .await?
-            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Location create failed")))
+        Ok(Location {
+            id,
+            name: name.to_string(),
+            center_lat,
+            center_lng,
+            radius_meters,
+            enabled,
+            created_at: Some(now),
+            updated_at: Some(now),
+        })
     }
 
     pub async fn update(
@@ -137,17 +157,17 @@ impl LocationRepository {
 
 pub fn map_location(doc: Map<String, Value>) -> Option<Location> {
     let id = doc
-        .get("__name__")
+        .get("id")
         .and_then(|v| v.as_str())
-        .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
-        .or_else(|| doc.get("id").and_then(|v| v.as_str()).map(String::from))?;
+        .map(String::from)
+        .or_else(|| doc_id(&doc))?;
 
     Some(Location {
         id,
         name: doc.get("name")?.as_str()?.to_string(),
-        center_lat: doc.get("centerLat")?.as_f64()?,
-        center_lng: doc.get("centerLng")?.as_f64()?,
-        radius_meters: doc.get("radiusMeters")?.as_f64()?,
+        center_lat: f64_from_value(doc.get("centerLat")?)?,
+        center_lng: f64_from_value(doc.get("centerLng")?)?,
+        radius_meters: f64_from_value(doc.get("radiusMeters")?)?,
         enabled: doc.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
         created_at: doc
             .get("createdAt")
@@ -156,6 +176,19 @@ pub fn map_location(doc: Map<String, Value>) -> Option<Location> {
             .get("updatedAt")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
     })
+}
+
+fn doc_id(row: &Map<String, Value>) -> Option<String> {
+    row.get("__name__")
+        .and_then(|v| v.as_str())
+        .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
+}
+
+fn f64_from_value(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64().or_else(|| n.as_i64().map(|v| v as f64)),
+        _ => None,
+    }
 }
 
 pub fn location_to_json(loc: &Location) -> Value {
@@ -169,4 +202,42 @@ pub fn location_to_json(loc: &Location) -> Value {
         "createdAt": loc.created_at,
         "updatedAt": loc.updated_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_location_reads_document_id_field() {
+        let doc = Map::from_iter([
+            ("id".into(), json!("loc-1")),
+            ("name".into(), json!("Nairobi CBD")),
+            ("centerLat".into(), json!(-1.286389)),
+            ("centerLng".into(), json!(36.817223)),
+            ("radiusMeters".into(), json!(500)),
+            ("enabled".into(), json!(true)),
+        ]);
+
+        let location = map_location(doc).expect("location");
+        assert_eq!(location.id, "loc-1");
+        assert_eq!(location.radius_meters, 500.0);
+    }
+
+    #[test]
+    fn map_location_reads_firestore_name_path() {
+        let doc = Map::from_iter([
+            (
+                "__name__".into(),
+                json!("campaigns/c1/locations/loc-from-path"),
+            ),
+            ("name".into(), json!("Zone A")),
+            ("centerLat".into(), json!(-1.28)),
+            ("centerLng".into(), json!(36.81)),
+            ("radiusMeters".into(), json!(250)),
+        ]);
+
+        let location = map_location(doc).expect("location");
+        assert_eq!(location.id, "loc-from-path");
+    }
 }
