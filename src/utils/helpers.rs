@@ -46,35 +46,6 @@ pub fn to_iso_string(value: &Value) -> Option<String> {
     }
 }
 
-pub fn to_csv(rows: &[Map<String, Value>], columns: &[&str]) -> String {
-    let header = columns.join(",");
-    let body = rows
-        .iter()
-        .map(|row| {
-            columns
-                .iter()
-                .map(|col| {
-                    let val = row.get(*col).cloned().unwrap_or(Value::Null);
-                    let s = match val {
-                        Value::String(v) => v,
-                        Value::Number(n) => n.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        _ => String::new(),
-                    };
-                    if s.contains(',') {
-                        format!("\"{}\"", s.replace('"', "\"\""))
-                    } else {
-                        s
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(",")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("{header}\n{body}")
-}
-
 pub fn encode_cursor(cursor: &serde_json::Value) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD

@@ -1,6 +1,7 @@
 use crate::config::Config;
 use anyhow::{bail, Context, Result};
-use firestore::{FirestoreDb, FirestoreSimpleBatchWriteOptions, FirestoreSimpleBatchWriter};
+use firestore::{FirestoreDb, FirestoreDbOptions, FirestoreSimpleBatchWriteOptions, FirestoreSimpleBatchWriter};
+use gcloud_sdk::{TokenSourceType, GCP_DEFAULT_SCOPES};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -28,16 +29,13 @@ impl FirestoreService {
 
         let project_id = config.project_id(service_account["project_id"].as_str())?;
 
-        let temp_path = std::env::temp_dir().join(format!(
-            "powerupgameon-firebase-{}.json",
-            std::process::id()
-        ));
-        std::fs::write(&temp_path, json)?;
-        std::env::set_var("GOOGLE_APPLICATION_CREDENTIALS", &temp_path);
-
-        let client = FirestoreDb::new(&project_id)
-            .await
-            .context("Failed to initialize Firestore client")?;
+        let client = FirestoreDb::with_options_token_source(
+            FirestoreDbOptions::new(project_id.clone()),
+            GCP_DEFAULT_SCOPES.clone(),
+            TokenSourceType::Json(json.clone()),
+        )
+        .await
+        .context("Failed to initialize Firestore client")?;
 
         crate::logger::log(
             config,

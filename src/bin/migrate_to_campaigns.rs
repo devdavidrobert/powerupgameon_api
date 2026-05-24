@@ -6,6 +6,7 @@ use powerupgameon_api::features::campaigns::domain::{CampaignStatus, GeoEnforcem
 use powerupgameon_api::features::campaigns::infrastructure::CampaignPaths;
 use powerupgameon_api::init_crypto_providers;
 use powerupgameon_api::services::firestore::FirestoreService;
+use powerupgameon_api::utils::firestore::document_id_from_map;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
@@ -104,7 +105,11 @@ async fn main() -> Result<()> {
     let default_location_id = ensure_default_location(&db, &paths).await?;
 
     let prize_counts = read_prize_counts(&db).await?;
-    migrate_inventory(&db, &paths, &default_location_id, &prize_counts, config.real_prize_limit)
+    let default_limit: i32 = std::env::var("REAL_PRIZE_LIMIT")
+        .unwrap_or_else(|_| "5".into())
+        .parse()
+        .unwrap_or(5);
+    migrate_inventory(&db, &paths, &default_location_id, &prize_counts, default_limit)
         .await?;
 
     backfill_location_ids(&db, &paths, &default_location_id).await?;
@@ -162,13 +167,10 @@ async fn migrate_collection(
     let mut count = 0usize;
 
     for doc in docs {
-        let id = doc
-            .get("__name__")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.rsplit('/').next())
-            .or_else(|| doc.get("id").and_then(|v| v.as_str()))
-            .unwrap_or("unknown")
-            .to_string();
+        let Some(id) = document_id_from_map(&doc) else {
+            eprintln!("Skipping document in '{collection}' with no resolvable id: {doc:?}");
+            continue;
+        };
 
         db.client
             .fluent()
@@ -346,15 +348,14 @@ async fn backfill_location_ids(
             if doc.get("locationId").is_some() {
                 continue;
             }
-            let id = doc
-                .get("sessionId")
-                .and_then(|v| v.as_str())
-                .or_else(|| doc.get("id").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            if id.is_empty() {
+            let Some(id) = document_id_from_map(&doc).or_else(|| {
+                doc.get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            }) else {
+                eprintln!("Skipping '{collection}' doc with no id during location backfill.");
                 continue;
-            }
+            };
             db.client
                 .fluent()
                 .update()

@@ -1,7 +1,10 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
+use crate::features::campaigns::domain::CampaignStatus;
+use crate::features::spin::domain::is_consolation_prize;
 use crate::models::prize::PrizeModel;
+use crate::utils::firestore::document_id_from_map;
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
@@ -103,6 +106,24 @@ pub async fn delete_prize(
     {
         return Err(ApiError::bad_request("Prize not found."));
     }
+
+    if ctx.campaign.status == CampaignStatus::Active {
+        let all = PrizeModel::find_all(&state, &ctx.paths).await?;
+        let target = all.iter().find(|p| document_id_from_map(p).as_deref() == Some(id.as_str()));
+        if let Some(prize) = target {
+            if is_consolation_prize(prize) {
+                let consolation_count = all.iter().filter(|p| is_consolation_prize(p)).count();
+                if consolation_count <= 1 {
+                    return Err(ApiError::with_code(
+                        StatusCode::BAD_REQUEST,
+                        "NO_CONSOLATION_PRIZES",
+                        "Cannot delete the last consolation prize on an active campaign.",
+                    ));
+                }
+            }
+        }
+    }
+
     PrizeModel::delete(&state, &ctx.paths, &id).await?;
     Ok(SuccessResponse::message("Prize deleted."))
 }

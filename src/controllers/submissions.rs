@@ -3,9 +3,10 @@ use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
+use crate::features::locations::domain::GeoStatus;
 use crate::models::registration::RegistrationModel;
 use crate::models::submission::{SubmissionCreateInput, SubmissionModel};
-use crate::utils::client_ip::get_client_ip;
+use crate::utils::client_ip::{get_client_ip, ClientPeer};
 use crate::utils::firestore::serialize_doc_data;
 use crate::utils::helpers::{decode_cursor, encode_cursor, submission_identity_from_registration};
 use crate::utils::spin_token::mint_spin_token;
@@ -93,6 +94,7 @@ pub async fn create_submission(
     State(state): State<Arc<AppState>>,
     PublicCampaignContext(ctx): PublicCampaignContext,
     Extension(req_ctx): Extension<RequestContext>,
+    ClientPeer(peer): ClientPeer,
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateSubmissionBody>,
 ) -> ApiResult<(StatusCode, Json<SuccessResponse<Value>>)> {
@@ -131,8 +133,8 @@ pub async fn create_submission(
     let geo_status = registration
         .get("geoStatus")
         .and_then(|v| v.as_str())
-        .unwrap_or("no_zones")
-        .to_string();
+        .map(GeoStatus::from_str)
+        .unwrap_or(GeoStatus::NoZones);
 
     let ua = body
         .user_agent
@@ -141,7 +143,7 @@ pub async fn create_submission(
         .or_else(|| headers.get("user-agent").and_then(|v| v.to_str().ok()))
         .unwrap_or("unknown")
         .to_string();
-    let ip = get_client_ip(&headers, state.config.trust_proxy, "unknown");
+    let ip = get_client_ip(&headers, state.config.trust_proxy, peer);
 
     let result = SubmissionModel::create(
         &state,

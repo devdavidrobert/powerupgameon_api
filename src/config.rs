@@ -12,10 +12,9 @@ pub struct Config {
     pub trust_proxy: bool,
     pub rate_limit_window_ms: u64,
     pub rate_limit_max: u32,
-    pub real_prize_limit: i32,
-    pub session_ttl_hours: u32,
     pub api_csrf_secret: String,
     pub spin_token_secret: String,
+    pub spin_token_ttl_minutes: u32,
     pub redis_url: Option<String>,
     pub allowed_admin_emails: Vec<String>,
     pub ip_geo_enabled: bool,
@@ -55,11 +54,6 @@ impl Config {
             .map(|s| s.to_lowercase())
             .collect();
 
-        let real_prize_limit = env::var("REAL_PRIZE_LIMIT")
-            .unwrap_or_else(|_| "5".into())
-            .parse()
-            .unwrap_or(5);
-
         let trust_proxy = matches!(
             env::var("TRUST_PROXY").as_deref(),
             Ok("1") | Ok("true")
@@ -88,6 +82,11 @@ impl Config {
             bail!("SPIN_TOKEN_SECRET must be set in production.");
         }
 
+        let spin_token_ttl_minutes = env::var("SPIN_TOKEN_TTL_MINUTES")
+            .unwrap_or_else(|_| "60".into())
+            .parse()
+            .unwrap_or(60);
+
         let redis_url = env::var("REDIS_URL")
             .ok()
             .filter(|s| !s.trim().is_empty());
@@ -95,6 +94,12 @@ impl Config {
         if is_production && redis_url.is_none() {
             tracing::warn!(
                 "[steam-api] REDIS_URL is unset: rate limit counters are per-process only. Set REDIS_URL for multi-instance deployments."
+            );
+        }
+
+        if is_production && trust_proxy {
+            tracing::info!(
+                "[steam-api] TRUST_PROXY=1: client IP is taken from X-Forwarded-For. Deploy behind a proxy that strips client-supplied forwarding headers."
             );
         }
 
@@ -127,10 +132,9 @@ impl Config {
             trust_proxy,
             rate_limit_window_ms: 15 * 60 * 1000,
             rate_limit_max: 200,
-            real_prize_limit,
-            session_ttl_hours: 12,
             api_csrf_secret,
             spin_token_secret,
+            spin_token_ttl_minutes,
             redis_url,
             allowed_admin_emails,
             ip_geo_enabled,

@@ -23,22 +23,11 @@ pub fn prize_id_from_map(prize: &Map<String, Value>) -> Option<String> {
 }
 
 pub fn is_consolation_prize(prize: &Map<String, Value>) -> bool {
-    if prize.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false) {
-        return true;
-    }
+    prize.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false)
+}
 
-    let name = prize
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-
-    name.contains("so close")
-        || name.contains("try again")
-        || name.contains("better luck")
-        || name == "👋"
-        || name == "😢"
+pub fn has_consolation_prize(prizes: &[Map<String, Value>]) -> bool {
+    prizes.iter().any(is_consolation_prize)
 }
 
 pub fn is_real_prize(prize: &Map<String, Value>) -> bool {

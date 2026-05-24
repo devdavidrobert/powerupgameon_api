@@ -32,6 +32,7 @@ impl CampaignService {
             if entry.cached_at.elapsed() < CACHE_TTL {
                 return Ok(entry.campaign.clone());
             }
+            SLUG_CACHE.remove(slug);
         }
 
         let campaign = CampaignRepository::find_by_slug(state, slug)

@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::application::CampaignService;
 use crate::features::campaigns::domain::{CampaignStatus, GeoEnforcement, StaggerMode};
+use crate::models::question::QuestionModel;
 use crate::features::campaigns::infrastructure::{
     build_update_payload, campaign_to_json, parse_challenge_time_value, parse_stagger_schedule,
     validate_challenge_window, validate_slug,
@@ -115,6 +116,7 @@ pub async fn archive_campaign(
     let ctx = SlugPath { slug: slug.clone() }.into_context(&state).await?;
     CampaignRepository::archive(&state, ctx.campaign_id()).await?;
     CampaignService::invalidate_slug(&slug);
+    QuestionModel::invalidate_list_cache(&ctx.campaign_id());
     Ok(SuccessResponse::message("Campaign archived."))
 }
 

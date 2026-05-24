@@ -8,6 +8,8 @@ use crate::features::locations::infrastructure::LocationRepository;
 use crate::models::prize::PrizeModel;
 use crate::models::submission::FinalizeSpinResult;
 use crate::utils::firestore::{document_id_from_map, millis_now};
+use crate::utils::firestore_tx::tx_get_optional;
+use crate::utils::spin_token::spin_replay_expires_at_ms;
 use firestore::errors::{
     BackoffError, FirestoreDataNotFoundError, FirestoreError, FirestoreErrorPublicGenericDetails,
     FirestoreInvalidParametersError, FirestoreInvalidParametersPublicDetails,
@@ -219,6 +221,7 @@ impl InventoryRepository {
         let token_fingerprint = token_fingerprint.to_string();
         let campaign = campaign.clone();
         let now = millis_now();
+        let spin_replay_expires_at = spin_replay_expires_at_ms(&state.config, now);
 
         db.run_transaction(move |db, transaction| {
             claim_tx(
@@ -234,6 +237,7 @@ impl InventoryRepository {
                 is_real_prize,
                 token_fingerprint.clone(),
                 now,
+                spin_replay_expires_at,
             )
         })
         .await
@@ -287,18 +291,11 @@ fn claim_tx<'b>(
     is_real_prize: bool,
     token_fingerprint: String,
     now: i64,
+    spin_replay_expires_at: i64,
 ) -> Pin<Box<dyn Future<Output = Result<FinalizeSpinResult, BackoffError<FirestoreError>>> + Send + 'b>>
 {
     Box::pin(async move {
-        let sub_doc: Option<Map<String, Value>> = db
-            .fluent()
-            .select()
-            .by_id_in(SUBMISSIONS_SUBCOL)
-            .parent(parent.as_str())
-            .obj()
-            .one(&session_id)
-            .await
-            .map_err(BackoffError::Permanent)?;
+        let sub_doc = tx_get_optional(&db, parent.as_str(), SUBMISSIONS_SUBCOL, &session_id).await?;
         let Some(sub) = sub_doc else {
             return Err(BackoffError::Permanent(FirestoreError::DataNotFoundError(
                 FirestoreDataNotFoundError::new(
@@ -319,15 +316,7 @@ fn claim_tx<'b>(
 
         if is_real_prize {
             let slot_id = InventorySlot::slot_key(&location_id, &prize_id);
-            let slot_doc: Option<Map<String, Value>> = db
-                .fluent()
-                .select()
-                .by_id_in(INVENTORY_SUBCOL)
-                .parent(parent.as_str())
-                .obj()
-                .one(&slot_id)
-                .await
-                .map_err(BackoffError::Permanent)?;
+            let slot_doc = tx_get_optional(&db, parent.as_str(), INVENTORY_SUBCOL, &slot_id).await?;
 
             let slot = slot_doc.and_then(map_slot).ok_or_else(|| {
                 BackoffError::Permanent(FirestoreError::InvalidParametersError(
@@ -365,15 +354,8 @@ fn claim_tx<'b>(
                 .map_err(BackoffError::Permanent)?;
         }
 
-        let token_doc: Option<Map<String, Value>> = db
-            .fluent()
-            .select()
-            .by_id_in(SPIN_TOKENS_SUBCOL)
-            .parent(parent.as_str())
-            .obj()
-            .one(&token_fingerprint)
-            .await
-            .map_err(BackoffError::Permanent)?;
+        let token_doc =
+            tx_get_optional(&db, parent.as_str(), SPIN_TOKENS_SUBCOL, &token_fingerprint).await?;
         if token_doc.is_some() {
             return Err(BackoffError::Permanent(FirestoreError::InvalidParametersError(
                 FirestoreInvalidParametersError::new(
@@ -393,7 +375,7 @@ fn claim_tx<'b>(
             .object(&json!({
                 "sessionId": session_id,
                 "consumedAt": now,
-                "expiresAt": now + 2 * 60 * 60 * 1000,
+                "expiresAt": spin_replay_expires_at,
             }))
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;

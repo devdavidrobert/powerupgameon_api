@@ -4,7 +4,16 @@ use base64::Engine;
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 
-const TTL_MS: i64 = 20 * 60 * 1000;
+fn ttl_ms(config: &Config) -> i64 {
+    i64::from(config.spin_token_ttl_minutes) * 60 * 1000
+}
+
+/// Firestore replay doc TTL: token lifetime plus one hour buffer (minimum 2 hours).
+pub fn spin_replay_expires_at_ms(config: &Config, now: i64) -> i64 {
+    let token_ttl = ttl_ms(config);
+    let two_hours = 2 * 60 * 60 * 1000;
+    now + token_ttl.max(two_hours) + 60 * 60 * 1000
+}
 
 #[derive(Serialize, Deserialize)]
 struct SpinPayload {
@@ -15,7 +24,7 @@ struct SpinPayload {
 
 pub fn mint_spin_token(config: &Config, campaign_id: &str, session_id: &str) -> ApiResult<String> {
     assert_secret(config)?;
-    let exp = chrono::Utc::now().timestamp_millis() + TTL_MS;
+    let exp = chrono::Utc::now().timestamp_millis() + ttl_ms(config);
     let payload = SpinPayload {
         sid: session_id.to_string(),
         cid: campaign_id.to_string(),
@@ -73,7 +82,7 @@ pub fn verify_spin_token(config: &Config, token: &str) -> ApiResult<(String, Str
         return Err(ApiError::with_code(
             axum::http::StatusCode::UNAUTHORIZED,
             "SPIN_TOKEN_EXPIRED",
-            "Spin token expired.",
+            "Your spin window has expired. Please contact event staff if you completed the quiz.",
         ));
     }
 

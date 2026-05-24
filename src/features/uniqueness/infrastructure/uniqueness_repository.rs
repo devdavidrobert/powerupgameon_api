@@ -47,16 +47,15 @@ impl UniquenessRepository {
         parent: &str,
         device_id: &str,
     ) -> Result<Option<Map<String, Value>>, BackoffError<FirestoreError>> {
-        let lock_id = crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
-
-        db.fluent()
-            .select()
-            .by_id_in(UNIQUENESS_SUBCOL)
-            .parent(parent)
-            .obj()
-            .one(&lock_id)
-            .await
-            .map_err(BackoffError::Permanent)
+        let lock_id =
+            crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
+        crate::utils::firestore_tx::tx_get_optional(
+            db,
+            parent,
+            UNIQUENESS_SUBCOL,
+            &lock_id,
+        )
+        .await
     }
 
     /// Creates (or overwrites) a device lock document. Primarily used after a

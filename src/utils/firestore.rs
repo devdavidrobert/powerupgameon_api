@@ -1,4 +1,7 @@
-use serde_json::{Map, Value};
+use crate::error::{ApiError, ApiResult};
+use firestore::{FirestoreQueryCursor, FirestoreValue};
+use gcloud_sdk::google::firestore::v1::value;
+use serde_json::{json, Map, Value};
 
 pub fn serialize_doc_data(data: &Map<String, Value>) -> Map<String, Value> {
     let mut out = data.clone();
@@ -70,4 +73,78 @@ pub fn document_id_from_map(row: &Map<String, Value>) -> Option<String> {
                 .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
         })
         .or_else(|| row.get("id").and_then(|v| v.as_str()).map(String::from))
+}
+
+/// Full Firestore document reference path for a subcollection document.
+pub fn document_ref_path(parent: &str, subcol: &str, doc_id: &str) -> String {
+    format!("{parent}/{subcol}/{doc_id}")
+}
+
+/// Resolve the full document reference path from a query row.
+pub fn document_ref_from_row(
+    row: &Map<String, Value>,
+    parent: &str,
+    subcol: &str,
+) -> Option<String> {
+    row.get("__name__")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| {
+            document_id_from_map(row).map(|id| document_ref_path(parent, subcol, &id))
+        })
+}
+
+fn firestore_integer(v: i64) -> FirestoreValue {
+    FirestoreValue::from(gcloud_sdk::google::firestore::v1::Value {
+        value_type: Some(value::ValueType::IntegerValue(v)),
+    })
+}
+
+fn firestore_reference(path: &str) -> FirestoreValue {
+    FirestoreValue::from(gcloud_sdk::google::firestore::v1::Value {
+        value_type: Some(value::ValueType::ReferenceValue(path.to_string())),
+    })
+}
+
+/// Cursor field values matching composite `(timestamp DESC, __name__ DESC)` ordering.
+pub fn pagination_cursor_values(timestamp: i64, doc_ref_path: &str) -> Vec<FirestoreValue> {
+    vec![
+        firestore_integer(timestamp),
+        firestore_reference(doc_ref_path),
+    ]
+}
+
+pub fn parse_page_cursor(
+    cursor: &Map<String, Value>,
+    timestamp_field: &str,
+) -> Option<(i64, String)> {
+    let ts = cursor.get(timestamp_field).and_then(millis_from_value)?;
+    let name = cursor.get("name").and_then(|v| v.as_str())?.to_string();
+    Some((ts, name))
+}
+
+pub fn build_page_cursor(
+    row: &Map<String, Value>,
+    timestamp_field: &str,
+    parent: &str,
+    subcol: &str,
+) -> Option<Map<String, Value>> {
+    let ts = row.get(timestamp_field).and_then(millis_from_value)?;
+    let name = document_ref_from_row(row, parent, subcol)?;
+    let mut cursor = Map::new();
+    cursor.insert(timestamp_field.into(), json!(ts));
+    cursor.insert("name".into(), json!(name));
+    Some(cursor)
+}
+
+pub fn start_after_cursor(
+    cursor: &Map<String, Value>,
+    timestamp_field: &str,
+) -> ApiResult<FirestoreQueryCursor> {
+    let (ts, name) = parse_page_cursor(cursor, timestamp_field).ok_or_else(|| {
+        ApiError::bad_request("Invalid pagination cursor.")
+    })?;
+    Ok(FirestoreQueryCursor::AfterValue(pagination_cursor_values(
+        ts, &name,
+    )))
 }

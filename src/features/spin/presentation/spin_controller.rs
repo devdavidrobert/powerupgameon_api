@@ -1,9 +1,12 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::PublicCampaignContext;
-use crate::features::spin::application::SpinService;
+use crate::features::inventory::domain::InventorySlot;
+use crate::features::inventory::infrastructure::InventoryRepository;
+use crate::features::spin::application::{SpinService, MAX_CLAIM_RETRIES};
 use crate::features::spin::domain::{
-    is_real_prize, pick_wheel_fallback, prize_id_from_map, SpinPrize, SpinResult,
+    has_consolation_prize, is_real_prize, pick_wheel_fallback, prize_id_from_map, SpinPrize,
+    SpinResult,
 };
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
@@ -15,10 +18,23 @@ use axum::{extract::State, Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
-use crate::features::spin::application::MAX_CLAIM_RETRIES;
+fn log_spin_slow(state: &AppState, req_ctx: &RequestContext, started: Instant) {
+    if started.elapsed().as_secs() > 8 {
+        logger::log(
+            &state.config,
+            "warn",
+            "spin_slow",
+            json!({
+                "requestId": req_ctx.request_id,
+                "elapsedMs": started.elapsed().as_millis(),
+            }),
+        );
+    }
+}
 
 #[derive(Deserialize)]
 pub struct SpinBody {
@@ -32,6 +48,7 @@ pub async fn spin_wheel(
     Extension(req_ctx): Extension<RequestContext>,
     Json(body): Json<SpinBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
+    let started = Instant::now();
     let spin_token = body
         .spin_token
         .as_deref()
@@ -72,6 +89,7 @@ pub async fn spin_wheel(
             .and_then(|p| p.get("order").and_then(|v| v.as_i64()))
             .unwrap_or(0);
         let is_real = won.map(is_real_prize).unwrap_or(false);
+        log_spin_slow(&state, &req_ctx, started);
         return Ok(SuccessResponse::data(
             SpinResult {
                 campaign_slug: ctx.slug().to_string(),
@@ -91,6 +109,7 @@ pub async fn spin_wheel(
         .await?
         .ok_or_else(|| ApiError::bad_request("Registration not found for this session."))?;
 
+    // Legacy defense-in-depth: registrations created before GPS-outside blocking.
     if registration.get("geoStatus").and_then(|v| v.as_str()) == Some("outside") {
         return Err(ApiError::with_code(
             axum::http::StatusCode::FORBIDDEN,
@@ -118,23 +137,40 @@ pub async fn spin_wheel(
         return Err(ApiError::bad_request("No prizes configured."));
     }
 
+    if !has_consolation_prize(&prizes) {
+        return Err(ApiError::with_code(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "NO_CONSOLATION_PRIZES",
+            "This campaign has no consolation prizes configured.",
+        ));
+    }
+
     let mut sorted = prizes.clone();
     sorted.sort_by_key(|p| p.get("order").and_then(|v| v.as_i64()).unwrap_or(0));
 
+    let slots = InventoryRepository::find_by_location(&state, &ctx.paths, &location_id).await?;
+    let slot_by_prize: HashMap<String, InventorySlot> = slots
+        .into_iter()
+        .map(|s| (s.prize_id.clone(), s))
+        .collect();
+    let now = chrono::Utc::now().timestamp_millis();
+
     let mut excluded_real_ids: HashSet<String> = HashSet::new();
-    let mut last_error = ApiError::bad_request("No prizes available to spin.");
+    let mut snapshot = SpinService::build_location_pool_snapshot(
+        &ctx.campaign,
+        &slot_by_prize,
+        &sorted,
+        now,
+        &excluded_real_ids,
+    );
+
+    let mut last_error = ApiError::with_code(
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "SPIN_POOL_EMPTY",
+        "No prizes are currently available to spin.",
+    );
 
     for attempt in 0..MAX_CLAIM_RETRIES {
-        let snapshot = SpinService::build_pool_snapshot_for_location(
-            &state,
-            &ctx.paths,
-            &ctx.campaign,
-            &location_id,
-            &sorted,
-            &excluded_real_ids,
-        )
-        .await?;
-
         if snapshot.real_claimable.is_empty() && snapshot.consolation.is_empty() {
             break;
         }
@@ -160,10 +196,20 @@ pub async fn spin_wheel(
         )
         .await
         {
-            Ok(response) => return Ok(response),
+            Ok(response) => {
+                log_spin_slow(&state, &req_ctx, started);
+                return Ok(response);
+            }
             Err(ApiError::WithStatus { code: Some(code), .. }) if code == "INVENTORY_EXHAUSTED" => {
                 if is_real {
                     excluded_real_ids.insert(entry.1);
+                    snapshot = SpinService::build_location_pool_snapshot(
+                        &ctx.campaign,
+                        &slot_by_prize,
+                        &sorted,
+                        now,
+                        &excluded_real_ids,
+                    );
                 }
                 last_error = ApiError::bad_request("Prize inventory exhausted.");
                 continue;
@@ -189,7 +235,7 @@ pub async fn spin_wheel(
     }
 
     if let Some(entry) = pick_wheel_fallback(&sorted) {
-        return SpinService::finalize_spin_claim(
+        let result = SpinService::finalize_spin_claim(
             &state,
             &ctx,
             &req_ctx,
@@ -202,6 +248,8 @@ pub async fn spin_wheel(
             None,
         )
         .await;
+        log_spin_slow(&state, &req_ctx, started);
+        return result;
     }
 
     Err(last_error)

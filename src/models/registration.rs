@@ -9,7 +9,10 @@ use crate::features::locations::domain::{
 use crate::features::locations::infrastructure::{IpApiProvider, LocationRepository};
 use crate::features::uniqueness::application::UniquenessService;
 use crate::features::uniqueness::infrastructure::UniquenessRepository;
-use crate::utils::firestore::millis_now;
+use crate::utils::firestore::{
+    build_page_cursor, millis_now, start_after_cursor,
+};
+use crate::utils::firestore_tx::tx_get_optional;
 use firestore::errors::{
     BackoffError, FirestoreError, FirestoreInvalidParametersError,
     FirestoreInvalidParametersPublicDetails,
@@ -75,30 +78,48 @@ impl RegistrationModel {
         state: &AppState,
         paths: &CampaignPaths,
         limit: usize,
-        _cursor: Option<Map<String, Value>>,
+        cursor: Option<Map<String, Value>>,
     ) -> ApiResult<(Vec<Map<String, Value>>, Option<Map<String, Value>>, bool)> {
         let parent = paths.parent_str(&state.db.client)?;
         let cap = limit.clamp(1, 200);
-        let items: Vec<Map<String, Value>> = state
+        let query_limit = (cap + 1) as u32;
+
+        let mut query = state
             .db
             .client
             .fluent()
             .select()
             .from(REGISTRATIONS_SUBCOL)
-            .parent(parent)
+            .parent(parent.as_str())
             .filter(|q| q.field("kind").eq("player"))
             .order_by([
                 ("registeredAt", FirestoreQueryDirection::Descending),
                 ("__name__", FirestoreQueryDirection::Descending),
-            ])
-            .limit(cap as u32)
+            ]);
+
+        if let Some(ref cursor_map) = cursor {
+            query = query.start_at(start_after_cursor(cursor_map, "registeredAt")?);
+        }
+
+        let mut items: Vec<Map<String, Value>> = query
+            .limit(query_limit)
             .obj()
             .query()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        let has_more = items.len() == cap;
-        Ok((items, None, has_more))
+        let has_more = items.len() > cap;
+        if has_more {
+            items.truncate(cap);
+        }
+        let next_cursor = if has_more {
+            items
+                .last()
+                .and_then(|row| build_page_cursor(row, "registeredAt", parent.as_str(), REGISTRATIONS_SUBCOL))
+        } else {
+            None
+        };
+        Ok((items, next_cursor, has_more))
     }
 
     pub async fn resolve_geo(
@@ -121,14 +142,11 @@ impl RegistrationModel {
             }
             GeoValidationResult::NoZonesConfigured => (None, GeoStatus::NoZones),
             GeoValidationResult::OutsideZones => {
-                if geo_enforcement == GeoEnforcement::Reject {
-                    return Err(ApiError::with_code(
-                        axum::http::StatusCode::FORBIDDEN,
-                        "GEO_OUTSIDE_ZONE",
-                        "You are outside the allowed participation zones for this campaign.",
-                    ));
-                }
-                (None, GeoStatus::Outside)
+                return Err(ApiError::with_code(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "GEO_OUTSIDE_ZONE",
+                    "You are outside the allowed participation zones for this campaign.",
+                ));
             }
         };
 
@@ -205,7 +223,7 @@ impl RegistrationModel {
         let user_agent = input.user_agent.clone();
         let now = millis_now();
         let location_id = input.location_id.clone();
-        let geo_status = input.geo_status.as_str().to_string();
+        let geo_status = input.geo_status;
         let lat = input.lat;
         let lng = input.lng;
         let ip_lat = input.ip_lat;
@@ -227,7 +245,7 @@ impl RegistrationModel {
                 user_agent.clone(),
                 now,
                 location_id.clone(),
-                geo_status.clone(),
+                geo_status,
                 lat,
                 lng,
                 ip_lat,
@@ -293,7 +311,7 @@ fn register_tx<'b>(
     user_agent: String,
     now: i64,
     location_id: Option<String>,
-    geo_status: String,
+    geo_status: GeoStatus,
     lat: f64,
     lng: f64,
     ip_lat: Option<f64>,
@@ -303,29 +321,14 @@ fn register_tx<'b>(
     device_fingerprint: Option<serde_json::Value>,
 ) -> Pin<Box<dyn Future<Output = Result<(), BackoffError<FirestoreError>>> + Send + 'b>> {
     Box::pin(async move {
-        let name_doc: Option<Map<String, Value>> = db
-            .fluent()
-            .select()
-            .by_id_in(REGISTRATIONS_SUBCOL)
-            .parent(parent.as_str())
-            .obj()
-            .one(&name_ref)
-            .await
-            .map_err(BackoffError::Permanent)?;
+        let name_doc = tx_get_optional(&db, parent.as_str(), REGISTRATIONS_SUBCOL, &name_ref).await?;
 
         if name_doc.is_some() {
             return Err(tx_err("NAME_TAKEN"));
         }
 
-        let session_doc: Option<Map<String, Value>> = db
-            .fluent()
-            .select()
-            .by_id_in(SESSIONS_SUBCOL)
-            .parent(parent.as_str())
-            .obj()
-            .one(&session_id)
-            .await
-            .map_err(BackoffError::Permanent)?;
+        let session_doc =
+            tx_get_optional(&db, parent.as_str(), SESSIONS_SUBCOL, &session_id).await?;
 
         if let Some(session) = session_doc {
             if session.get("hasPlayed").and_then(|v| v.as_bool()) == Some(true) {
@@ -434,7 +437,7 @@ fn register_tx<'b>(
                 "locationId": location_id,
                 "lat": lat,
                 "lng": lng,
-                "geoStatus": geo_status,
+                "geoStatus": geo_status.as_str(),
                 "ipLat": ip_lat,
                 "ipLng": ip_lng,
                 "ipGeoStatus": ip_geo_status,

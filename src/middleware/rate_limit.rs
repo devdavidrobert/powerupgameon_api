@@ -115,10 +115,10 @@ pub async fn global_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = crate::utils::client_ip::get_client_ip(
+    let ip = crate::utils::client_ip::get_client_ip_from_request(
         req.headers(),
+        req.extensions(),
         state.config.trust_proxy,
-        "unknown",
     );
     if let Err(resp) = check_rate_limit(&state, &ip, &GLOBAL_RULE).await {
         return resp;
@@ -131,10 +131,10 @@ pub async fn registration_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = crate::utils::client_ip::get_client_ip(
+    let ip = crate::utils::client_ip::get_client_ip_from_request(
         req.headers(),
+        req.extensions(),
         state.config.trust_proxy,
-        "unknown",
     );
     if let Err(resp) = check_rate_limit(&state, &ip, &REGISTRATION_RULE).await {
         return resp;
@@ -147,10 +147,10 @@ pub async fn submission_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = crate::utils::client_ip::get_client_ip(
+    let ip = crate::utils::client_ip::get_client_ip_from_request(
         req.headers(),
+        req.extensions(),
         state.config.trust_proxy,
-        "unknown",
     );
     if let Err(resp) = check_rate_limit(&state, &ip, &SUBMISSION_RULE).await {
         return resp;
@@ -180,10 +180,10 @@ pub async fn spin_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = crate::utils::client_ip::get_client_ip(
+    let ip = crate::utils::client_ip::get_client_ip_from_request(
         req.headers(),
+        req.extensions(),
         state.config.trust_proxy,
-        "unknown",
     );
     let (parts, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, SPIN_BODY_LIMIT).await {

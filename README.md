@@ -18,6 +18,13 @@ Firebase credentials: set `FIREBASE_SERVICE_ACCOUNT_JSON` in `.env` (single-line
 - Set **`REDIS_URL`** so registration, submission, spin, and global rate limits share counters across all API instances. If it is unset in production, the process logs a warning and limiters fall back to in-memory stores.
 - Set **`TRUST_PROXY=1`** (or `true`) when the API sits behind a reverse proxy or load balancer so client IPs and rate-limit keys use `X-Forwarded-For` correctly.
 - Set **`API_CSRF_SECRET`** and **`SPIN_TOKEN_SECRET`** in production (required at startup).
+- Optional **`SPIN_TOKEN_TTL_MINUTES`** (default `60`) controls how long a quiz-to-spin token remains valid.
+
+**Vercel deployment**
+
+- **`build_app`** caches `AppState` per serverless instance via `OnceCell` — warm invocations skip Firestore re-init.
+- **`maxDuration: 60`** in `vercel.json` requires **Vercel Pro**. Hobby tier hard-caps at 10 seconds; cold starts plus Firestore init may timeout. Use Pro for production, or configure a cron job to hit `/health` every 5 minutes to reduce cold starts.
+- Set **`REDIS_URL`** in production — if configured but unreachable, the API **fails startup** (no silent in-memory fallback).
 
 ---
 
@@ -96,7 +103,7 @@ All game data is scoped under a campaign, resolved by URL slug:
 cargo run --bin migrate-to-campaigns -- --slug default --name "Legacy Campaign"
 ```
 
-This creates a campaign, copies root collections into `campaigns/{id}/*` subcollections, adds a default geofence location, and seeds per-location inventory from `REAL_PRIZE_LIMIT` / `system/aggregates`.
+This creates a campaign, copies root collections into `campaigns/{id}/*` subcollections, adds a default geofence location, and seeds per-location inventory from `REAL_PRIZE_LIMIT` (migration CLI only) / `system/aggregates`.
 
 ---
 
@@ -152,7 +159,8 @@ In the Vercel project → **Settings → Environment Variables**, add the same v
 | `TRUST_PROXY` | `1` |
 | `REDIS_URL` | `redis://host:port` (scheme required) |
 | `ALLOWED_ADMIN_EMAILS` | Comma-separated admin emails |
-| `REAL_PRIZE_LIMIT` | Optional, default `5` |
+| `REAL_PRIZE_LIMIT` | Migration CLI only (`migrate-to-campaigns`), default `5` |
+| `SPIN_TOKEN_TTL_MINUTES` | Spin token lifetime in minutes, default `60` |
 | `IP_GEO_ENABLED` | `true`/`1` to cross-check GPS vs IP on registration (recommended in production) |
 | `IP_GEO_MAX_DISTANCE_KM` | Max km between GPS and IP coords when both resolve; default `150` |
 | `IP_GEO_API_URL` | Optional provider URL with `{ip}` placeholder; default uses ip-api.com |

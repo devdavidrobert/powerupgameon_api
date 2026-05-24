@@ -33,6 +33,8 @@ base64 = "0.22"
 rand = "0.8"
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"] }
 firestore = "0.47"
+gcloud-sdk = "0.28"
+futures-util = "0.3"
 sha2 = "0.10"
 hex = "0.4"
 dashmap = "5"

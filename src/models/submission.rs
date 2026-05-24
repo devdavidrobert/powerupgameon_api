@@ -1,22 +1,26 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::infrastructure::CampaignPaths;
-use crate::features::inventory::infrastructure::InventoryRepository;
+use crate::features::inventory::domain::InventorySlot;
+use crate::features::locations::domain::GeoStatus;
 use crate::models::prize::PrizeModel;
 use crate::models::question::QuestionModel;
 use crate::models::registration::RegistrationModel;
-use crate::utils::firestore::millis_now;
+use crate::utils::firestore::{build_page_cursor, millis_now, start_after_cursor};
+use crate::utils::firestore_tx::tx_get_optional;
 use anyhow::anyhow;
 use firestore::errors::{
     BackoffError, FirestoreError, FirestoreInvalidParametersError,
     FirestoreInvalidParametersPublicDetails,
 };
 use firestore::FirestoreQueryDirection;
+use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
+const INVENTORY_SUBCOL: &str = "inventory";
 const SUBMISSIONS_SUBCOL: &str = "submissions";
 const SESSIONS_SUBCOL: &str = "sessions";
 const REGISTRATIONS_SUBCOL: &str = "registrations";
@@ -32,7 +36,7 @@ pub struct SubmissionCreateInput {
     pub user_agent: String,
     pub ip: String,
     pub location_id: Option<String>,
-    pub geo_status: String,
+    pub geo_status: GeoStatus,
 }
 
 #[derive(Debug)]
@@ -65,29 +69,47 @@ impl SubmissionModel {
         state: &AppState,
         paths: &CampaignPaths,
         limit: usize,
-        _cursor: Option<Map<String, Value>>,
+        cursor: Option<Map<String, Value>>,
     ) -> ApiResult<(Vec<Map<String, Value>>, Option<Map<String, Value>>, bool)> {
         let parent = paths.parent_str(&state.db.client)?;
         let cap = limit.clamp(1, 200);
-        let items: Vec<Map<String, Value>> = state
+        let query_limit = (cap + 1) as u32;
+
+        let mut query = state
             .db
             .client
             .fluent()
             .select()
             .from(SUBMISSIONS_SUBCOL)
-            .parent(parent)
+            .parent(parent.as_str())
             .order_by([
                 ("submittedAt", FirestoreQueryDirection::Descending),
                 ("__name__", FirestoreQueryDirection::Descending),
-            ])
-            .limit(cap as u32)
+            ]);
+
+        if let Some(ref cursor_map) = cursor {
+            query = query.start_at(start_after_cursor(cursor_map, "submittedAt")?);
+        }
+
+        let mut items: Vec<Map<String, Value>> = query
+            .limit(query_limit)
             .obj()
             .query()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        let has_more = items.len() == cap;
-        Ok((items, None, has_more))
+        let has_more = items.len() > cap;
+        if has_more {
+            items.truncate(cap);
+        }
+        let next_cursor = if has_more {
+            items
+                .last()
+                .and_then(|row| build_page_cursor(row, "submittedAt", parent.as_str(), SUBMISSIONS_SUBCOL))
+        } else {
+            None
+        };
+        Ok((items, next_cursor, has_more))
     }
 
     pub async fn ids_that_exist(
@@ -95,12 +117,33 @@ impl SubmissionModel {
         paths: &CampaignPaths,
         ids: &[String],
     ) -> ApiResult<HashSet<String>> {
+        if ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let parent = paths.parent_str(&state.db.client)?;
         let mut existing = HashSet::new();
-        for id in ids {
-            if Self::find_by_id(state, paths, id).await?.is_some() {
-                existing.insert(id.clone());
+
+        for chunk in ids.chunks(100) {
+            let mut stream = state
+                .db
+                .client
+                .fluent()
+                .select()
+                .by_id_in(SUBMISSIONS_SUBCOL)
+                .parent(parent.as_str())
+                .obj::<Map<String, Value>>()
+                .batch(chunk)
+                .await
+                .map_err(|e| ApiError::Internal(e.into()))?;
+
+            while let Some((id, doc)) = stream.next().await {
+                if doc.is_some() {
+                    existing.insert(id);
+                }
             }
         }
+
         Ok(existing)
     }
 
@@ -167,7 +210,8 @@ impl SubmissionModel {
             });
         }
 
-        if input.geo_status == "outside" {
+        // Legacy defense-in-depth for registrations created before GPS-outside blocking.
+        if input.geo_status == GeoStatus::Outside {
             return Err(ApiError::with_code(
                 axum::http::StatusCode::FORBIDDEN,
                 "GEO_OUTSIDE_ZONE",
@@ -226,7 +270,7 @@ impl SubmissionModel {
             "userAgent": input.user_agent,
             "ip": input.ip,
             "locationId": input.location_id,
-            "geoStatus": input.geo_status,
+            "geoStatus": input.geo_status.as_str(),
             "status": status,
             "submittedAt": millis_now(),
         });
@@ -257,65 +301,129 @@ impl SubmissionModel {
     }
 
     pub async fn delete(state: &AppState, paths: &CampaignPaths, id: &str) -> ApiResult<()> {
+        let prizes = PrizeModel::find_all(state, paths).await?;
         let sub = Self::find_by_id(state, paths, id).await?;
         let reg = RegistrationModel::find_by_id(state, paths, id).await?;
 
-        let mut decrement: Option<(String, String)> = None;
-        if let Some(sub) = &sub {
-            if let (Some(prize_name), Some(location_id)) = (
-                sub.get("prize").and_then(|v| v.as_str()),
-                sub.get("locationId").and_then(|v| v.as_str()),
-            ) {
-                if prize_name != "pending" && prize_name != "Nothing" {
-                    let prizes = PrizeModel::find_all(state, paths).await?;
-                    if let Some(prize) = prizes.iter().find(|p| {
-                        p.get("name").and_then(|n| n.as_str()) == Some(prize_name)
-                            && p.get("isRealPrize").and_then(|v| v.as_bool()).unwrap_or(true)
-                    }) {
-                        if let Some(prize_id) = prize.get("id").and_then(|v| v.as_str()) {
-                            decrement = Some((location_id.to_string(), prize_id.to_string()));
-                        }
-                    }
-                }
-            }
-        }
+        let decrement = sub.as_ref().and_then(|sub| {
+            resolve_inventory_decrement(sub, &prizes)
+        });
+        let delete_registration = reg.is_some();
+        let normalized_name = reg
+            .as_ref()
+            .and_then(|r| r.get("normalizedName").and_then(|v| v.as_str()))
+            .map(String::from);
 
+        let db = state.db.client.clone();
         let parent = paths.parent_str(&state.db.client)?;
-        let writer = state.db.batch_writer().await.map_err(|e| ApiError::Internal(e.into()))?;
-        let mut batch = writer.new_batch();
+        let id = id.to_string();
 
-        delete_in_batch(&state.db.client, &mut batch, parent.as_str(), SUBMISSIONS_SUBCOL, id)?;
-        delete_in_batch(&state.db.client, &mut batch, parent.as_str(), SESSIONS_SUBCOL, id)?;
-
-        if reg.is_some() {
-            delete_in_batch(
-                &state.db.client,
-                &mut batch,
-                parent.as_str(),
-                REGISTRATIONS_SUBCOL,
-                id,
-            )?;
-            if let Some(reg) = reg {
-                if let Some(normalized) = reg.get("normalizedName").and_then(|v| v.as_str()) {
-                    delete_in_batch(
-                        &state.db.client,
-                        &mut batch,
-                        parent.as_str(),
-                        REGISTRATIONS_SUBCOL,
-                        &format!("name_{normalized}"),
-                    )?;
-                }
-            }
-        }
-
-        batch.write().await.map_err(|e| ApiError::Internal(e.into()))?;
-
-        if let Some((location_id, prize_id)) = decrement {
-            InventoryRepository::decrement_on_delete(state, paths, &location_id, &prize_id).await?;
-        }
+        db.run_transaction(move |db, transaction| {
+            delete_submission_tx(
+                db,
+                transaction,
+                parent.clone(),
+                id.clone(),
+                delete_registration,
+                normalized_name.clone(),
+                decrement.clone(),
+            )
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
 
         Ok(())
     }
+}
+
+fn resolve_inventory_decrement(
+    sub: &Map<String, Value>,
+    prizes: &[Map<String, Value>],
+) -> Option<(String, String)> {
+    let prize_name = sub.get("prize").and_then(|v| v.as_str())?;
+    let location_id = sub.get("locationId").and_then(|v| v.as_str())?;
+    if prize_name == "pending" || prize_name == "Nothing" {
+        return None;
+    }
+    let prize = prizes.iter().find(|p| {
+        p.get("name").and_then(|n| n.as_str()) == Some(prize_name)
+            && p.get("isRealPrize").and_then(|v| v.as_bool()).unwrap_or(true)
+    })?;
+    let prize_id = prize.get("id").and_then(|v| v.as_str())?;
+    Some((location_id.to_string(), prize_id.to_string()))
+}
+
+fn delete_submission_tx<'b>(
+    db: firestore::FirestoreDb,
+    transaction: &'b mut firestore::FirestoreTransaction,
+    parent: String,
+    id: String,
+    delete_registration: bool,
+    normalized_name: Option<String>,
+    decrement: Option<(String, String)>,
+) -> Pin<Box<dyn Future<Output = Result<(), BackoffError<FirestoreError>>> + Send + 'b>> {
+    Box::pin(async move {
+        if let Some((location_id, prize_id)) = &decrement {
+            let slot_id = InventorySlot::slot_key(location_id, prize_id);
+            let slot_doc =
+                tx_get_optional(&db, parent.as_str(), INVENTORY_SUBCOL, &slot_id).await?;
+
+            if let Some(slot_doc) = slot_doc {
+                let awarded = slot_doc
+                    .get("awardedCount")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if awarded > 0 {
+                    db.fluent()
+                        .update()
+                        .in_col(INVENTORY_SUBCOL)
+                        .document_id(&slot_id)
+                        .parent(parent.as_str())
+                        .object(&json!({
+                            "awardedCount": awarded - 1,
+                            "updatedAt": millis_now(),
+                        }))
+                        .add_to_transaction(transaction)
+                        .map_err(BackoffError::Permanent)?;
+                }
+            }
+        }
+
+        delete_doc_tx(&db, transaction, &parent, SUBMISSIONS_SUBCOL, &id)?;
+        delete_doc_tx(&db, transaction, &parent, SESSIONS_SUBCOL, &id)?;
+
+        if delete_registration {
+            delete_doc_tx(&db, transaction, &parent, REGISTRATIONS_SUBCOL, &id)?;
+            if let Some(normalized) = normalized_name {
+                delete_doc_tx(
+                    &db,
+                    transaction,
+                    &parent,
+                    REGISTRATIONS_SUBCOL,
+                    &format!("name_{normalized}"),
+                )?;
+            }
+        }
+
+        Ok(())
+    })
+}
+
+fn delete_doc_tx(
+    db: &firestore::FirestoreDb,
+    transaction: &mut firestore::FirestoreTransaction,
+    parent: &str,
+    collection: &str,
+    id: &str,
+) -> Result<(), BackoffError<FirestoreError>> {
+    db.fluent()
+        .delete()
+        .from(collection)
+        .parent(parent)
+        .document_id(id)
+        .add_to_transaction(transaction)
+        .map_err(BackoffError::Permanent)?;
+    Ok(())
 }
 
 fn create_tx<'b>(
@@ -332,15 +440,8 @@ fn create_tx<'b>(
     let prize = prize.to_string();
     let status = status.to_string();
     Box::pin(async move {
-        let session_doc: Option<Map<String, Value>> = db
-            .fluent()
-            .select()
-            .by_id_in(SESSIONS_SUBCOL)
-            .parent(parent.as_str())
-            .obj()
-            .one(&session_id)
-            .await
-            .map_err(BackoffError::Permanent)?;
+        let session_doc =
+            tx_get_optional(&db, parent.as_str(), SESSIONS_SUBCOL, &session_id).await?;
         if session_doc.is_none() {
             return Err(BackoffError::Permanent(FirestoreError::InvalidParametersError(
                 FirestoreInvalidParametersError::new(FirestoreInvalidParametersPublicDetails::new(
@@ -350,15 +451,8 @@ fn create_tx<'b>(
             )));
         }
 
-        let sub_doc: Option<Map<String, Value>> = db
-            .fluent()
-            .select()
-            .by_id_in(SUBMISSIONS_SUBCOL)
-            .parent(parent.as_str())
-            .obj()
-            .one(&session_id)
-            .await
-            .map_err(BackoffError::Permanent)?;
+        let sub_doc =
+            tx_get_optional(&db, parent.as_str(), SUBMISSIONS_SUBCOL, &session_id).await?;
         if let Some(existing) = sub_doc {
             let mut out = existing;
             out.insert("id".into(), json!(session_id));
@@ -394,23 +488,6 @@ fn create_tx<'b>(
         out.insert("id".into(), json!(session_id));
         Ok(out)
     })
-}
-
-fn delete_in_batch(
-    db: &firestore::FirestoreDb,
-    batch: &mut firestore::FirestoreBatch<'_, firestore::FirestoreSimpleBatchWriter>,
-    parent: &str,
-    collection: &str,
-    id: &str,
-) -> ApiResult<()> {
-    db.fluent()
-        .delete()
-        .from(collection)
-        .parent(parent)
-        .document_id(id)
-        .add_to_batch(batch)
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    Ok(())
 }
 
 fn map_submission_error(err: FirestoreError) -> ApiError {

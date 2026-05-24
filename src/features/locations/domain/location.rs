@@ -32,6 +32,14 @@ impl GeoStatus {
             Self::NoZones => "no_zones",
         }
     }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "valid" => Self::Valid,
+            "outside" => Self::Outside,
+            _ => Self::NoZones,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

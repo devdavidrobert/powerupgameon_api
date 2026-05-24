@@ -1593,6 +1593,8 @@ dependencies = [
  "dashmap",
  "dotenvy",
  "firestore",
+ "futures-util",
+ "gcloud-sdk",
  "hex",
  "http",
  "jsonwebtoken 10.4.0",

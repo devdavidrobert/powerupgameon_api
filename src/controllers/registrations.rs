@@ -5,7 +5,7 @@ use crate::logger;
 use crate::middleware::request_context::RequestContext;
 use crate::models::registration::{RegistrationInput, RegistrationModel};
 use crate::models::submission::SubmissionModel;
-use crate::utils::client_ip::get_client_ip;
+use crate::utils::client_ip::{get_client_ip, ClientPeer};
 use crate::utils::firestore::serialize_doc_data;
 use crate::utils::helpers::{decode_cursor, encode_cursor, normalize_name};
 use axum::{
@@ -16,6 +16,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Deserialize)]
 pub struct RegistrationQuery {
@@ -99,9 +100,11 @@ pub async fn register(
     State(state): State<Arc<AppState>>,
     PublicCampaignContext(ctx): PublicCampaignContext,
     Extension(req_ctx): Extension<RequestContext>,
+    ClientPeer(peer): ClientPeer,
     headers: axum::http::HeaderMap,
     Json(body): Json<RegisterBody>,
 ) -> ApiResult<(StatusCode, Json<SuccessResponse<Value>>)> {
+    let started = Instant::now();
     validate_name_part(body.first_name.as_deref(), "firstName")?;
     validate_name_part(body.last_name.as_deref(), "lastName")?;
     let session_id = body
@@ -121,7 +124,7 @@ pub async fn register(
     let last = body.last_name.as_ref().unwrap().trim();
     let full_name = format!("{first} {last}");
     let normalized = normalize_name(&full_name);
-    let ip = get_client_ip(&headers, state.config.trust_proxy, "unknown");
+    let ip = get_client_ip(&headers, state.config.trust_proxy, peer);
     let user_agent = body
         .user_agent
         .as_deref()
@@ -141,6 +144,10 @@ pub async fn register(
         &ip,
     )
     .await?;
+
+    let geo_status = geo_resolve.geo_status;
+    let location_id = geo_resolve.location_id.clone();
+    let ip_geo_status = geo_resolve.ip_geo_status.clone();
 
     RegistrationModel::register(
         &state,
@@ -190,8 +197,21 @@ pub async fn register(
             "requestId": req_ctx.request_id,
             "sessionId": session_id,
             "campaignSlug": ctx.slug(),
+            "elapsedMs": started.elapsed().as_millis(),
         }),
     );
+
+    if started.elapsed().as_secs() > 8 {
+        logger::log(
+            &state.config,
+            "warn",
+            "registration_slow",
+            json!({
+                "requestId": req_ctx.request_id,
+                "elapsedMs": started.elapsed().as_millis(),
+            }),
+        );
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -200,6 +220,9 @@ pub async fn register(
             data: Some(json!({
                 "sessionId": session_id,
                 "fullName": full_name.to_uppercase(),
+                "geoStatus": geo_status.as_str(),
+                "locationId": location_id,
+                "ipGeoStatus": ip_geo_status,
             })),
             message: Some("Registration successful.".into()),
             code: None,

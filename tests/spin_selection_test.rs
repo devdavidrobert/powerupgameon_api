@@ -9,8 +9,8 @@ use powerupgameon_api::features::spin::application::spin_service::{
     LocationPoolSnapshot, SchedulePressureMetrics,
 };
 use powerupgameon_api::features::spin::domain::{
-    is_consolation_prize, partition_spin_pool, pick_wheel_fallback, prize_id_from_map,
-    ClaimableRealEntry,
+    has_consolation_prize, is_consolation_prize, partition_spin_pool, pick_wheel_fallback,
+    prize_id_from_map, ClaimableRealEntry,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -106,10 +106,19 @@ fn partition_is_location_scoped_via_slot_map() {
 }
 
 #[test]
-fn so_close_is_consolation_even_without_flag() {
+fn has_consolation_prize_detects_flagged_entries() {
+    let prizes = vec![prize("Steam Can", "p1", 1, true), prize("Try Again", "p2", 2, false)];
+    assert!(has_consolation_prize(&prizes));
+}
+
+#[test]
+fn consolation_requires_explicit_flag() {
     let mut p = prize("So Close", "p2", 2, true);
     p.remove("isRealPrize");
-    assert!(is_consolation_prize(&p));
+    assert!(!is_consolation_prize(&p));
+
+    let consolation = prize("So Close", "p2", 2, false);
+    assert!(is_consolation_prize(&consolation));
 }
 
 #[test]
