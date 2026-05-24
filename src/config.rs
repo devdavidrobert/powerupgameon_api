@@ -20,9 +20,24 @@ pub struct Config {
     pub ip_geo_enabled: bool,
     pub ip_geo_max_distance_km: f64,
     pub ip_geo_api_url: Option<String>,
+    /// When set (e.g. `powerupgameon`), also allow `https://{project}.vercel.app` and preview URLs.
+    pub cors_vercel_project: Option<String>,
 }
 
 impl Config {
+    pub fn is_origin_allowed(&self, origin: &str) -> bool {
+        if self.allowed_origins.iter().any(|allowed| allowed == origin) {
+            return true;
+        }
+        let Some(project) = self.cors_vercel_project.as_deref() else {
+            return false;
+        };
+        if origin == format!("https://{project}.vercel.app") {
+            return true;
+        }
+        origin.starts_with(&format!("https://{project}-")) && origin.ends_with(".vercel.app")
+    }
+
     pub fn load() -> Result<Self> {
         dotenvy::dotenv().ok();
 
@@ -37,7 +52,7 @@ impl Config {
             .map(String::from)
             .collect::<Vec<_>>();
 
-        let allowed_origins = if raw_origins.is_empty() {
+        let mut allowed_origins = if raw_origins.is_empty() {
             vec![
                 "http://localhost:3000".into(),
                 "http://127.0.0.1:3000".into(),
@@ -45,6 +60,20 @@ impl Config {
         } else {
             raw_origins
         };
+
+        for key in ["FRONTEND_URL", "NEXT_PUBLIC_APP_URL"] {
+            if let Ok(url) = env::var(key) {
+                let trimmed = url.trim().trim_end_matches('/');
+                if !trimmed.is_empty() && !allowed_origins.iter().any(|o| o == trimmed) {
+                    allowed_origins.push(trimmed.to_string());
+                }
+            }
+        }
+
+        let cors_vercel_project = env::var("CORS_VERCEL_PROJECT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
         let allowed_admin_emails = env::var("ALLOWED_ADMIN_EMAILS")
             .unwrap_or_default()
@@ -135,6 +164,7 @@ impl Config {
             ip_geo_enabled,
             ip_geo_max_distance_km,
             ip_geo_api_url,
+            cors_vercel_project,
         })
     }
 

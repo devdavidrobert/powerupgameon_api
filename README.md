@@ -22,9 +22,9 @@ Firebase credentials: set `FIREBASE_SERVICE_ACCOUNT_JSON` in `.env` (single-line
 
 **Vercel deployment**
 
-- **`build_app`** caches `AppState` per serverless instance via `OnceCell` — warm invocations skip Firestore re-init.
-- **`maxDuration: 60`** in `vercel.json` requires **Vercel Pro**. Hobby tier hard-caps at 10 seconds; cold starts plus Firestore init may timeout. Use Pro for production, or configure a cron job to hit `/health` every 5 minutes to reduce cold starts.
-- Set **`REDIS_URL`** in production — if configured but unreachable, the API **fails startup** (no silent in-memory fallback).
+- Set **`NODE_ENV=production`**, **`API_CSRF_SECRET`**, **`SPIN_TOKEN_SECRET`**, and **`FIREBASE_SERVICE_ACCOUNT_JSON`** on the API project. Missing secrets cause `FUNCTION_INVOCATION_FAILED` (browser shows a CORS error because no headers are returned).
+- Set **`ALLOWED_ORIGINS=https://powerupgameon.vercel.app`** or **`FRONTEND_URL=https://powerupgameon.vercel.app`** (merged into CORS). Optional **`CORS_VERCEL_PROJECT=powerupgameon`** also allows preview deployment URLs.
+- If **`REDIS_URL`** is set but unreachable, the API now falls back to in-memory rate limits instead of failing startup.
 
 ---
 

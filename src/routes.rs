@@ -72,10 +72,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 let Ok(origin_str) = origin.to_str() else {
                     return false;
                 };
-                cors_state
-                    .config
-                    .allowed_origins
-                    .contains(&origin_str.to_string())
+                cors_state.config.is_origin_allowed(origin_str)
             },
         ));
 

@@ -139,3 +139,34 @@ fn build_update_payload_clears_stagger_schedule_for_non_stepped_modes() {
 
     assert_eq!(payload.get("staggerSchedule"), Some(&Value::Null));
 }
+
+#[test]
+fn config_allows_explicit_and_vercel_project_origins() {
+    use powerupgameon_api::config::Config;
+
+    let config = Config {
+        port: 4000,
+        node_env: "production".into(),
+        is_production: true,
+        firebase_project_id: None,
+        firebase_service_account_json: None,
+        allowed_origins: vec!["https://custom.example.com".into()],
+        cors_vercel_project: Some("powerupgameon".into()),
+        trust_proxy: true,
+        rate_limit_window_ms: 900_000,
+        rate_limit_max: 200,
+        api_csrf_secret: "secret".into(),
+        spin_token_secret: "secret".into(),
+        spin_token_ttl_minutes: 60,
+        redis_url: None,
+        allowed_admin_emails: vec![],
+        ip_geo_enabled: false,
+        ip_geo_max_distance_km: 150.0,
+        ip_geo_api_url: None,
+    };
+
+    assert!(config.is_origin_allowed("https://custom.example.com"));
+    assert!(config.is_origin_allowed("https://powerupgameon.vercel.app"));
+    assert!(config.is_origin_allowed("https://powerupgameon-git-main-user.vercel.app"));
+    assert!(!config.is_origin_allowed("https://other.vercel.app"));
+}

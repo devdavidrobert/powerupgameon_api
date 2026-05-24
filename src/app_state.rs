@@ -18,11 +18,25 @@ impl AppState {
         let firebase_auth = FirebaseAuth::new(&config, &db).await?;
 
         let redis = if let Some(url) = &config.redis_url {
-            let client = redis::Client::open(url.as_str())
-                .map_err(|err| anyhow::anyhow!("Failed to open Redis client: {err}"))?;
-            Some(ConnectionManager::new(client).await.map_err(|err| {
-                anyhow::anyhow!("REDIS_URL is set but Redis is unreachable: {err}")
-            })?)
+            match redis::Client::open(url.as_str()) {
+                Ok(client) => match ConnectionManager::new(client).await {
+                    Ok(conn) => Some(conn),
+                    Err(err) => {
+                        tracing::warn!(
+                            %err,
+                            "REDIS_URL is set but Redis is unreachable; using in-memory rate limits"
+                        );
+                        None
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        %err,
+                        "Invalid REDIS_URL; using in-memory rate limits"
+                    );
+                    None
+                }
+            }
         } else {
             None
         };

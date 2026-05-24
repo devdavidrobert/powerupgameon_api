@@ -12,6 +12,7 @@ pub fn test_config() -> Config {
         firebase_project_id: None,
         firebase_service_account_json: None,
         allowed_origins: vec!["http://localhost:3000".into()],
+        cors_vercel_project: None,
         trust_proxy: false,
         rate_limit_window_ms: 15 * 60 * 1000,
         rate_limit_max: 200,
