@@ -9,7 +9,7 @@ use crate::features::spin::domain::is_consolation_prize;
 use crate::models::prize::PrizeModel;
 use axum::{extract::State, Json};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 #[derive(Deserialize)]
@@ -20,6 +20,14 @@ pub struct UpsertInventoryBody {
     pub prize_id: String,
     #[serde(rename = "totalQuantity")]
     pub total_quantity: i64,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteInventoryBody {
+    #[serde(rename = "locationId")]
+    pub location_id: String,
+    #[serde(rename = "prizeId")]
+    pub prize_id: String,
 }
 
 pub async fn list_inventory(
@@ -83,4 +91,34 @@ pub async fn upsert_inventory(
     };
 
     Ok(SuccessResponse::data(inventory_view_to_json(&view)))
+}
+
+pub async fn delete_inventory(
+    State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
+    Json(body): Json<DeleteInventoryBody>,
+) -> ApiResult<Json<SuccessResponse<Value>>> {
+    if body.location_id.trim().is_empty() {
+        return Err(ApiError::bad_request("locationId is required."));
+    }
+    if body.prize_id.trim().is_empty() {
+        return Err(ApiError::bad_request("prizeId is required."));
+    }
+
+    let _ = LocationRepository::find_by_id(&state, &ctx.paths, body.location_id.trim())
+        .await?
+        .ok_or_else(|| ApiError::bad_request("Location not found."))?;
+    let _ = PrizeModel::find_by_id(&state, &ctx.paths, body.prize_id.trim())
+        .await?
+        .ok_or_else(|| ApiError::bad_request("Prize not found."))?;
+
+    InventoryRepository::delete_slot(
+        &state,
+        &ctx.paths,
+        body.location_id.trim(),
+        body.prize_id.trim(),
+    )
+    .await?;
+
+    Ok(SuccessResponse::data(json!({ "deleted": true })))
 }

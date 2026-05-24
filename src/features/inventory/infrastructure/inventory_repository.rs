@@ -165,6 +165,38 @@ impl InventoryRepository {
         })
     }
 
+    pub async fn delete_slot(
+        state: &AppState,
+        paths: &CampaignPaths,
+        location_id: &str,
+        prize_id: &str,
+    ) -> ApiResult<()> {
+        if location_id.trim().is_empty() || prize_id.trim().is_empty() {
+            return Err(ApiError::bad_request("locationId and prizeId are required."));
+        }
+
+        let existing = Self::find_slot(state, paths, location_id, prize_id).await?;
+        if existing.is_none() {
+            return Ok(());
+        }
+
+        let id = InventorySlot::slot_key(location_id, prize_id);
+        let parent = paths.parent_str(&state.db.client)?;
+        state
+            .db
+            .client
+            .fluent()
+            .delete()
+            .from(INVENTORY_SUBCOL)
+            .parent(parent)
+            .document_id(&id)
+            .execute()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        Ok(())
+    }
+
     pub async fn build_views(
         state: &AppState,
         paths: &CampaignPaths,

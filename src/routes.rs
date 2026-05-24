@@ -5,7 +5,7 @@ use crate::features::campaigns::presentation::{
     archive_campaign, clear_campaign_timers, create_campaign, get_campaign, get_campaign_settings,
     get_campaign_settings_admin, list_campaigns, update_campaign, update_campaign_settings,
 };
-use crate::features::inventory::presentation::{list_inventory, upsert_inventory};
+use crate::features::inventory::presentation::{delete_inventory, list_inventory, upsert_inventory};
 use crate::features::locations::presentation::{
     create_location, delete_location, list_locations, update_location,
 };
@@ -172,7 +172,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     let api_inventory = with_admin(
         admin.clone(),
-        Router::new().route("/", get(list_inventory).put(upsert_inventory)),
+        Router::new().route("/", get(list_inventory).put(upsert_inventory).delete(delete_inventory)),
     );
 
     let api_raffles = with_admin(
