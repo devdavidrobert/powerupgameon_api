@@ -9,6 +9,7 @@ use crate::middleware::request_context::RequestContext;
 use crate::models::prize::PrizeModel;
 use crate::models::registration::RegistrationModel;
 use crate::models::submission::SubmissionModel;
+use crate::utils::firestore::document_id_from_map;
 use crate::utils::spin_token::verify_spin_token;
 use axum::{extract::State, Extension, Json};
 use rand::Rng;
@@ -132,67 +133,27 @@ pub async fn spin_wheel(
         }
 
         let pick_idx = rand::thread_rng().gen_range(0..pool.len());
-        let (won, prize_id) = &pool[pick_idx];
-        let prize_name = won.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let order = won.get("order").and_then(|v| v.as_i64()).unwrap_or(0);
-        let is_real = is_real_prize(won);
+        let entry = pool[pick_idx].clone();
+        let is_real = is_real_prize(&entry.0);
 
-        match InventoryRepository::claim_atomic(
+        match finalize_spin_claim(
             &state,
-            &ctx.paths,
-            &ctx.campaign,
+            &ctx,
+            &req_ctx,
             &session_id,
             &location_id,
-            prize_id,
-            prize_name,
-            is_real,
+            &sorted,
             &fingerprint,
+            entry.clone(),
+            is_real,
+            Some(attempt + 1),
         )
         .await
         {
-            Ok(result) if result.finalized => {
-                logger::log(
-                    &state.config,
-                    "info",
-                    "spin_audit",
-                    json!({
-                        "requestId": req_ctx.request_id,
-                        "sessionIdPrefix": &session_id[..session_id.len().min(10)],
-                        "campaignSlug": ctx.slug(),
-                        "prize": prize_name,
-                        "isRealPrize": is_real,
-                        "attempt": attempt + 1,
-                        "tokenFingerprint": &fingerprint[..fingerprint.len().min(16)],
-                    }),
-                );
-                return Ok(SuccessResponse::data(json!({
-                    "prize": {
-                        "name": prize_name,
-                        "order": order,
-                        "isRealPrize": is_real,
-                    },
-                    "animationDuration": DEFAULT_ANIMATION_MS,
-                })));
-            }
-            Ok(result) => {
-                if let Some(prev_name) = result.previous_prize {
-                    let prev = sorted
-                        .iter()
-                        .find(|p| p.get("name").and_then(|v| v.as_str()) == Some(prev_name.as_str()));
-                    return Ok(SuccessResponse::data(json!({
-                        "prize": {
-                            "name": prev_name,
-                            "order": prev.and_then(|p| p.get("order").and_then(|v| v.as_i64())).unwrap_or(order),
-                            "isRealPrize": prev.map(is_real_prize).unwrap_or(false),
-                        },
-                        "animationDuration": DEFAULT_ANIMATION_MS,
-                        "idempotent": true,
-                    })));
-                }
-            }
+            Ok(response) => return Ok(response),
             Err(ApiError::WithStatus { code: Some(code), .. }) if code == "INVENTORY_EXHAUSTED" => {
                 if is_real {
-                    excluded_real_ids.insert(prize_id.clone());
+                    excluded_real_ids.insert(entry.1);
                 }
                 last_error = ApiError::bad_request("Prize inventory exhausted.");
                 continue;
@@ -217,53 +178,101 @@ pub async fn spin_wheel(
         }
     }
 
-    if let Some((won, prize_id)) = pick_consolation_fallback(&sorted) {
-        let prize_name = won.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let order = won.get("order").and_then(|v| v.as_i64()).unwrap_or(0);
-        match InventoryRepository::claim_atomic(
+    if let Some(entry) = pick_wheel_fallback(&sorted) {
+        return finalize_spin_claim(
             &state,
-            &ctx.paths,
-            &ctx.campaign,
+            &ctx,
+            &req_ctx,
             &session_id,
             &location_id,
-            &prize_id,
-            prize_name,
-            false,
+            &sorted,
             &fingerprint,
+            entry,
+            false,
+            None,
         )
-        .await
-        {
-            Ok(result) if result.finalized => {
-                return Ok(SuccessResponse::data(json!({
-                    "prize": {
-                        "name": prize_name,
-                        "order": order,
-                        "isRealPrize": false,
-                    },
-                    "animationDuration": DEFAULT_ANIMATION_MS,
-                })));
-            }
-            Ok(result) => {
-                if let Some(prev_name) = result.previous_prize {
-                    let prev = sorted
-                        .iter()
-                        .find(|p| p.get("name").and_then(|v| v.as_str()) == Some(prev_name.as_str()));
-                    return Ok(SuccessResponse::data(json!({
-                        "prize": {
-                            "name": prev_name,
-                            "order": prev.and_then(|p| p.get("order").and_then(|v| v.as_i64())).unwrap_or(order),
-                            "isRealPrize": prev.map(is_real_prize).unwrap_or(false),
-                        },
-                        "animationDuration": DEFAULT_ANIMATION_MS,
-                        "idempotent": true,
-                    })));
-                }
-            }
-            Err(err) => return Err(err),
-        }
+        .await;
     }
 
     Err(last_error)
+}
+
+async fn finalize_spin_claim(
+    state: &AppState,
+    ctx: &crate::features::campaigns::presentation::CampaignContext,
+    req_ctx: &RequestContext,
+    session_id: &str,
+    location_id: &str,
+    sorted: &[serde_json::Map<String, Value>],
+    fingerprint: &str,
+    entry: SpinPoolEntry,
+    award_as_real: bool,
+    attempt: Option<usize>,
+) -> ApiResult<Json<SuccessResponse<Value>>> {
+    let (won, prize_id) = entry;
+    let prize_name = won.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let order = won.get("order").and_then(|v| v.as_i64()).unwrap_or(0);
+    let is_real = award_as_real && is_real_prize(&won);
+
+    match InventoryRepository::claim_atomic(
+        state,
+        &ctx.paths,
+        &ctx.campaign,
+        session_id,
+        location_id,
+        &prize_id,
+        prize_name,
+        is_real,
+        fingerprint,
+    )
+    .await
+    {
+        Ok(result) if result.finalized => {
+            if let Some(n) = attempt {
+                logger::log(
+                    &state.config,
+                    "info",
+                    "spin_audit",
+                    json!({
+                        "requestId": req_ctx.request_id,
+                        "sessionIdPrefix": &session_id[..session_id.len().min(10)],
+                        "campaignSlug": ctx.slug(),
+                        "prize": prize_name,
+                        "isRealPrize": is_real,
+                        "attempt": n,
+                        "tokenFingerprint": &fingerprint[..fingerprint.len().min(16)],
+                    }),
+                );
+            }
+            Ok(SuccessResponse::data(json!({
+                "prize": {
+                    "name": prize_name,
+                    "order": order,
+                    "isRealPrize": is_real,
+                },
+                "animationDuration": DEFAULT_ANIMATION_MS,
+            })))
+        }
+        Ok(result) => {
+            if let Some(prev_name) = result.previous_prize {
+                let prev = sorted
+                    .iter()
+                    .find(|p| p.get("name").and_then(|v| v.as_str()) == Some(prev_name.as_str()));
+                Ok(SuccessResponse::data(json!({
+                    "prize": {
+                        "name": prev_name,
+                        "order": prev.and_then(|p| p.get("order").and_then(|v| v.as_i64())).unwrap_or(order),
+                        "isRealPrize": prev.map(is_real_prize).unwrap_or(false),
+                    },
+                    "animationDuration": DEFAULT_ANIMATION_MS,
+                    "idempotent": true,
+                })))
+            } else {
+                Err(ApiError::bad_request("Spin could not be finalized."))
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 async fn build_spin_pool(
@@ -304,10 +313,9 @@ fn partition_spin_pool(
     let mut consolation = Vec::new();
 
     for prize in prizes {
-        let Some(prize_id) = prize.get("id").and_then(|v| v.as_str()) else {
+        let Some(prize_id) = prize_id_from_map(prize) else {
             continue;
         };
-        let prize_id = prize_id.to_string();
 
         if is_consolation_prize(prize) {
             consolation.push((prize.clone(), prize_id));
@@ -329,19 +337,48 @@ fn partition_spin_pool(
     (real_claimable, consolation)
 }
 
-fn pick_consolation_fallback(prizes: &[serde_json::Map<String, Value>]) -> Option<SpinPoolEntry> {
-    prizes
-        .iter()
-        .filter(|p| is_consolation_prize(p))
-        .filter_map(|p| {
-            let id = p.get("id")?.as_str()?.to_string();
-            Some((p.clone(), id))
-        })
-        .next()
+fn prize_id_from_map(prize: &serde_json::Map<String, Value>) -> Option<String> {
+    prize
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| document_id_from_map(prize))
+}
+
+fn pick_wheel_fallback(prizes: &[serde_json::Map<String, Value>]) -> Option<SpinPoolEntry> {
+    for prize in prizes {
+        if is_consolation_prize(prize) {
+            if let Some(entry) = prize_entry(prize) {
+                return Some(entry);
+            }
+        }
+    }
+
+    prizes.iter().rev().filter_map(prize_entry).next()
+}
+
+fn prize_entry(prize: &serde_json::Map<String, Value>) -> Option<SpinPoolEntry> {
+    let id = prize_id_from_map(prize)?;
+    Some((prize.clone(), id))
 }
 
 fn is_consolation_prize(prize: &serde_json::Map<String, Value>) -> bool {
-    prize.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false)
+    if prize.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false) {
+        return true;
+    }
+
+    let name = prize
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+
+    name.contains("so close")
+        || name.contains("try again")
+        || name.contains("better luck")
+        || name == "👋"
+        || name == "😢"
 }
 
 fn is_real_prize(prize: &serde_json::Map<String, Value>) -> bool {
@@ -427,5 +464,19 @@ mod tests {
 
         assert_eq!(real.len(), 1);
         assert_eq!(consolation.len(), 1);
+    }
+
+    #[test]
+    fn so_close_is_consolation_even_without_flag() {
+        let mut p = prize("So Close", "p2", 2, true);
+        p.remove("isRealPrize");
+        assert!(is_consolation_prize(&p));
+    }
+
+    #[test]
+    fn pick_wheel_fallback_uses_last_prize_when_no_consolation() {
+        let prizes = vec![prize("Steam Can", "p1", 1, true), prize("Merch", "p2", 2, true)];
+        let picked = pick_wheel_fallback(&prizes).expect("fallback");
+        assert_eq!(picked.0.get("name").and_then(|v| v.as_str()), Some("Merch"));
     }
 }
