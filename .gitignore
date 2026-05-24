@@ -1,4 +1,5 @@
-serviceAccount.json
+/target
 .env
+serviceAccount.json
 serviceAccountKey.json
-node_modules/
+.vercel
