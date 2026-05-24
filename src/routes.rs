@@ -1,13 +1,12 @@
 use crate::app_state::AppState;
-use crate::controllers::{
-    auth, prizes, questions, raffles, registrations, spin, submissions,
-};
+use crate::controllers::{auth, prizes, questions, raffles, registrations, submissions};
 use crate::error::{json_error, SuccessResponse};
 use crate::features::campaigns::presentation::{
     archive_campaign, clear_campaign_timers, create_campaign, get_campaign, get_campaign_settings,
     list_campaigns, update_campaign, update_campaign_settings,
 };
 use crate::features::inventory::presentation::{list_inventory, upsert_inventory};
+use crate::features::spin::presentation::spin_wheel;
 use crate::features::locations::presentation::{
     create_location, delete_location, list_locations, update_location,
 };
@@ -140,7 +139,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     let api_spin = with_challenge_open(Router::new().route(
         "/",
-        post(spin::spin_wheel).layer(middleware::from_fn_with_state(
+        post(spin_wheel).layer(middleware::from_fn_with_state(
             state.clone(),
             spin_rate_limit_middleware,
         )),

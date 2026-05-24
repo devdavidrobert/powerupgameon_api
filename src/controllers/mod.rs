@@ -3,5 +3,4 @@ pub mod prizes;
 pub mod questions;
 pub mod raffles;
 pub mod registrations;
-pub mod spin;
 pub mod submissions;
