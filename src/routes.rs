@@ -190,11 +190,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             inject_campaign_context,
         ));
 
-    let api_campaigns = with_admin(
+    let api_campaign_admin = with_admin(
         state.clone(),
         Router::new()
-            .route("/", get(list_campaigns).post(create_campaign))
-            .route("/{slug}", get(get_campaign).put(update_campaign).delete(archive_campaign)),
+            .route("/api/campaigns", get(list_campaigns).post(create_campaign))
+            .route(
+                "/api/campaigns/{slug}",
+                get(get_campaign)
+                    .put(update_campaign)
+                    .delete(archive_campaign),
+            ),
     );
 
     let api_auth = Router::new()
@@ -211,7 +216,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/csrf-token", get(csrf_token))
-        .nest("/api/campaigns", csrf(api_campaigns))
+        .merge(csrf(api_campaign_admin))
         .nest("/api/campaigns/{slug}", csrf(campaign_slug_routes))
         .nest("/api/auth", csrf(api_auth))
         .fallback(|| async { json_error(StatusCode::NOT_FOUND, "Route not found.") })
