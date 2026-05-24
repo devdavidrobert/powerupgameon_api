@@ -41,14 +41,6 @@ pub struct DeviceFingerprint {
     pub fingerprint_hash: Option<String>,
 }
 
-/// IP-related signals captured server-side (for correlation records).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IpSignals {
-    pub ip: String,
-    #[serde(rename = "userAgent")]
-    pub user_agent: String,
-}
-
 /// Result of a uniqueness check. When `allowed` is false, `reason` contains the
 /// error code for the client (e.g. "DEVICE_ALREADY_USED").
 #[derive(Debug, Clone)]

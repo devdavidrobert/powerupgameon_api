@@ -35,13 +35,6 @@ pub fn value_to_iso(value: &Value) -> Option<String> {
     }
 }
 
-pub fn doc_to_map<T: serde::Serialize>(value: &T) -> Map<String, Value> {
-    match serde_json::to_value(value).unwrap_or(Value::Null) {
-        Value::Object(map) => map,
-        _ => Map::new(),
-    }
-}
-
 pub fn millis_now() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }

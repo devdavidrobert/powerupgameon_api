@@ -215,11 +215,8 @@ async fn ensure_default_location(db: &FirestoreService, paths: &CampaignPaths) -
         .await?;
 
     if let Some(doc) = existing.into_iter().next() {
-        let id = doc
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| "default".into());
+        let id = document_id_from_map(&doc)
+            .ok_or_else(|| anyhow::anyhow!("existing location document has no resolvable id"))?;
         return Ok(id);
     }
 

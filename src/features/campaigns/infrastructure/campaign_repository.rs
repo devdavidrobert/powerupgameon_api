@@ -7,8 +7,6 @@ use crate::features::campaigns::infrastructure::campaign_paths::CAMPAIGNS_COLLEC
 use crate::utils::firestore::millis_now;
 use firestore::FirestoreQueryDirection;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
-
 pub struct CampaignRepository;
 
 impl CampaignRepository {
@@ -360,11 +358,4 @@ pub fn validate_slug(slug: &str) -> ApiResult<()> {
         ));
     }
     Ok(())
-}
-
-#[allow(dead_code)]
-pub fn slug_index(rows: &[Campaign]) -> HashMap<String, String> {
-    rows.iter()
-        .map(|c| (c.slug.clone(), c.id.clone()))
-        .collect()
 }

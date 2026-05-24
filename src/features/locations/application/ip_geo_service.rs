@@ -47,7 +47,7 @@ impl IpGeoService {
             return IpGeoCrossCheck::Skipped;
         };
 
-        if locations.iter().any(|l| l.enabled) == false {
+        if !locations.iter().any(|l| l.enabled) {
             return IpGeoCrossCheck::Skipped;
         }
 

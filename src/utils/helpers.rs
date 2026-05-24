@@ -35,17 +35,6 @@ pub fn fisher_yates_shuffle<T>(mut array: Vec<T>) -> Vec<T> {
     array
 }
 
-pub fn to_iso_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) if n.as_i64().is_some() => {
-            chrono::DateTime::from_timestamp_millis(n.as_i64().unwrap())
-                .map(|dt| dt.to_rfc3339())
-        }
-        _ => None,
-    }
-}
-
 pub fn encode_cursor(cursor: &serde_json::Value) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD
