@@ -44,6 +44,10 @@ impl LocationRepository {
         paths: &CampaignPaths,
         id: &str,
     ) -> ApiResult<Option<Location>> {
+        if id.trim().is_empty() {
+            return Ok(None);
+        }
+
         let parent = paths.parent_str(&state.db.client)?;
         let doc: Option<Map<String, Value>> = state
             .db

@@ -42,7 +42,17 @@ impl InventoryRepository {
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        Ok(rows.into_iter().filter_map(map_slot).collect())
+        Ok(rows
+            .into_iter()
+            .filter_map(|mut row| {
+                if !row.contains_key("id") {
+                    if let Some(id) = slot_doc_id(&row) {
+                        row.insert("id".into(), json!(id));
+                    }
+                }
+                map_slot(row)
+            })
+            .collect())
     }
 
     pub async fn find_by_location(
@@ -63,6 +73,10 @@ impl InventoryRepository {
         location_id: &str,
         prize_id: &str,
     ) -> ApiResult<Option<InventorySlot>> {
+        if location_id.trim().is_empty() || prize_id.trim().is_empty() {
+            return Ok(None);
+        }
+
         let id = InventorySlot::slot_key(location_id, prize_id);
         let parent = paths.parent_str(&state.db.client)?;
         let doc: Option<Map<String, Value>> = state
@@ -72,12 +86,15 @@ impl InventoryRepository {
             .select()
             .by_id_in(INVENTORY_SUBCOL)
             .parent(parent)
-            .obj()
+            .obj::<Map<String, Value>>()
             .one(&id)
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        Ok(doc.and_then(map_slot))
+        Ok(doc.and_then(|mut row| {
+            row.entry("id").or_insert_with(|| json!(id));
+            map_slot(row)
+        }))
     }
 
     pub async fn upsert_slot(
@@ -123,9 +140,14 @@ impl InventoryRepository {
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        Self::find_slot(state, paths, location_id, prize_id)
-            .await?
-            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Inventory upsert failed")))
+        Ok(InventorySlot {
+            id,
+            location_id: location_id.to_string(),
+            prize_id: prize_id.to_string(),
+            total_quantity,
+            awarded_count: awarded,
+            updated_at: Some(now),
+        })
     }
 
     pub async fn build_views(
@@ -410,21 +432,37 @@ fn claim_tx<'b>(
 
 fn map_slot(doc: Map<String, Value>) -> Option<InventorySlot> {
     let id = doc
-        .get("__name__")
+        .get("id")
         .and_then(|v| v.as_str())
-        .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
-        .or_else(|| doc.get("id").and_then(|v| v.as_str()).map(String::from))?;
+        .map(String::from)
+        .or_else(|| slot_doc_id(&doc))?;
 
     Some(InventorySlot {
         id,
         location_id: doc.get("locationId")?.as_str()?.to_string(),
         prize_id: doc.get("prizeId")?.as_str()?.to_string(),
-        total_quantity: doc.get("totalQuantity")?.as_i64()?,
-        awarded_count: doc.get("awardedCount").and_then(|v| v.as_i64()).unwrap_or(0),
+        total_quantity: i64_from_value(doc.get("totalQuantity")?)?,
+        awarded_count: doc
+            .get("awardedCount")
+            .and_then(i64_from_value)
+            .unwrap_or(0),
         updated_at: doc
             .get("updatedAt")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
     })
+}
+
+fn slot_doc_id(row: &Map<String, Value>) -> Option<String> {
+    row.get("__name__")
+        .and_then(|v| v.as_str())
+        .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
+}
+
+fn i64_from_value(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|v| v as i64)),
+        _ => None,
+    }
 }
 
 fn map_claim_error(err: FirestoreError) -> ApiError {
@@ -457,4 +495,24 @@ pub fn inventory_view_to_json(view: &InventoryView) -> Value {
         "releasableNow": view.releasable_now,
         "remaining": view.remaining,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_slot_reads_integer_quantities() {
+        let doc = Map::from_iter([
+            ("id".into(), json!("loc1_prize1")),
+            ("locationId".into(), json!("loc1")),
+            ("prizeId".into(), json!("prize1")),
+            ("totalQuantity".into(), json!(10)),
+            ("awardedCount".into(), json!(2)),
+        ]);
+
+        let slot = map_slot(doc).expect("slot");
+        assert_eq!(slot.total_quantity, 10);
+        assert_eq!(slot.awarded_count, 2);
+    }
 }

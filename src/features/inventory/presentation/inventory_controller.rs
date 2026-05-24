@@ -34,13 +34,20 @@ pub async fn upsert_inventory(
     ctx: CampaignContext,
     Json(body): Json<UpsertInventoryBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if LocationRepository::find_by_id(&state, &ctx.paths, &body.location_id)
+    if body.location_id.trim().is_empty() {
+        return Err(ApiError::bad_request("locationId is required."));
+    }
+    if body.prize_id.trim().is_empty() {
+        return Err(ApiError::bad_request("prizeId is required."));
+    }
+
+    if LocationRepository::find_by_id(&state, &ctx.paths, body.location_id.trim())
         .await?
         .is_none()
     {
         return Err(ApiError::bad_request("Location not found."));
     }
-    if PrizeModel::find_by_id(&state, &ctx.paths, &body.prize_id)
+    if PrizeModel::find_by_id(&state, &ctx.paths, body.prize_id.trim())
         .await?
         .is_none()
     {
@@ -50,8 +57,8 @@ pub async fn upsert_inventory(
     let slot = InventoryRepository::upsert_slot(
         &state,
         &ctx.paths,
-        &body.location_id,
-        &body.prize_id,
+        body.location_id.trim(),
+        body.prize_id.trim(),
         body.total_quantity,
     )
     .await?;
