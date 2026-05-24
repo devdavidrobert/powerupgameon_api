@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::controllers::{auth, prizes, questions, raffles, registrations, submissions};
 use crate::error::{json_error, SuccessResponse};
+use crate::features::branding::presentation::upload_brand_logo;
 use crate::features::campaigns::presentation::{
     archive_campaign, clear_campaign_timers, create_campaign, get_campaign, get_campaign_settings,
     get_campaign_settings_admin, list_campaigns, update_campaign, update_campaign_settings,
@@ -107,6 +108,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             .route(
                 "/{id}",
                 put(prizes::update_prize).delete(prizes::delete_prize),
+            )
+            .route(
+                "/{id}/image/upload",
+                post(prizes::upload_prize_image).layer(RequestBodyLimitLayer::new(3 * 1024 * 1024)),
             ),
     ));
 
@@ -160,7 +165,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             Router::new()
                 .route("/admin/full", get(get_campaign_settings_admin))
                 .route("/", put(update_campaign_settings))
-                .route("/timers", delete(clear_campaign_timers)),
+                .route("/timers", delete(clear_campaign_timers))
+                .route(
+                    "/brand-logos/upload",
+                    post(upload_brand_logo).layer(RequestBodyLimitLayer::new(3 * 1024 * 1024)),
+                ),
         ));
 
     let api_locations = with_admin(

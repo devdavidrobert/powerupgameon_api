@@ -261,6 +261,10 @@ impl FirebaseAuth {
         Ok(())
     }
 
+    pub async fn access_token(&self) -> Result<String> {
+        self.get_access_token().await
+    }
+
     async fn get_access_token(&self) -> Result<String> {
         let mut guard = self.access_token.lock().await;
         let now = chrono::Utc::now();

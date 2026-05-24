@@ -10,6 +10,7 @@ pub fn test_config() -> Config {
         node_env: "test".into(),
         is_production: false,
         firebase_project_id: None,
+        firebase_storage_bucket: None,
         firebase_service_account_json: None,
         allowed_origins: vec!["http://localhost:3000".into()],
         cors_vercel_project: None,

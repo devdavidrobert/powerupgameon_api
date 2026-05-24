@@ -106,9 +106,12 @@ impl PrizeModel {
         id: &str,
         data: Map<String, Value>,
     ) -> ApiResult<Map<String, Value>> {
+        let Some(existing) = Self::find_by_id(state, paths, id).await? else {
+            return Err(ApiError::bad_request("Prize not found."));
+        };
+
         let parent = paths.parent_str(&state.db.client)?;
-        let mut payload = data;
-        payload.insert("updatedAt".into(), json!(millis_now()));
+        let payload = merge_prize_fields(&existing, data, millis_now());
 
         state
             .db
@@ -145,6 +148,30 @@ impl PrizeModel {
     }
 }
 
+/// Firestore `.update().object()` replaces the whole document in our client — merge fields
+/// so name, order, and isRealPrize survive partial updates (e.g. image-only uploads).
+fn merge_prize_fields(
+    existing: &Map<String, Value>,
+    updates: Map<String, Value>,
+    updated_at: i64,
+) -> Map<String, Value> {
+    let mut merged: Map<String, Value> = existing
+        .iter()
+        .filter(|(k, _)| !k.starts_with('_'))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    for (key, value) in updates {
+        if key == "updatedAt" {
+            continue;
+        }
+        merged.insert(key, value);
+    }
+
+    merged.insert("updatedAt".into(), json!(updated_at));
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +187,37 @@ mod tests {
 
         let id = document_id_from_map(&row).expect("id");
         assert_eq!(id, "prize-abc");
+    }
+
+    #[test]
+    fn merge_prize_fields_preserves_existing_fields_on_partial_update() {
+        let existing = Map::from_iter([
+            ("id".into(), json!("p1")),
+            ("name".into(), json!("Steam Can")),
+            ("order".into(), json!(1)),
+            ("isRealPrize".into(), json!(true)),
+            ("createdAt".into(), json!(1_700_000_000_000_i64)),
+        ]);
+
+        let merged = merge_prize_fields(
+            &existing,
+            Map::from_iter([("imageUrl".into(), json!("https://cdn.example/p.png"))]),
+            1_700_000_000_100,
+        );
+
+        assert_eq!(merged.get("name").and_then(|v| v.as_str()), Some("Steam Can"));
+        assert_eq!(merged.get("order").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(
+            merged.get("isRealPrize").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            merged.get("imageUrl").and_then(|v| v.as_str()),
+            Some("https://cdn.example/p.png")
+        );
+        assert_eq!(
+            merged.get("updatedAt").and_then(|v| v.as_i64()),
+            Some(1_700_000_000_100)
+        );
     }
 }

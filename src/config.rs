@@ -7,6 +7,7 @@ pub struct Config {
     pub node_env: String,
     pub is_production: bool,
     pub firebase_project_id: Option<String>,
+    pub firebase_storage_bucket: Option<String>,
     pub firebase_service_account_json: Option<String>,
     pub allowed_origins: Vec<String>,
     pub trust_proxy: bool,
@@ -187,6 +188,10 @@ impl Config {
             node_env,
             is_production,
             firebase_project_id: env::var("FIREBASE_PROJECT_ID").ok(),
+            firebase_storage_bucket: env::var("FIREBASE_STORAGE_BUCKET")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             firebase_service_account_json: env::var("FIREBASE_SERVICE_ACCOUNT_JSON").ok(),
             allowed_origins,
             trust_proxy,
@@ -218,5 +223,11 @@ impl Config {
             return Ok(id.to_string());
         }
         bail!("FIREBASE_PROJECT_ID is required when not present in service account JSON.");
+    }
+
+    pub fn storage_bucket(&self, project_id: &str) -> String {
+        self.firebase_storage_bucket
+            .clone()
+            .unwrap_or_else(|| format!("{project_id}.firebasestorage.app"))
     }
 }

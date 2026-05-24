@@ -33,6 +33,8 @@ fn draft_campaign_is_not_publicly_accessible() {
         stagger_schedule: None,
         geo_enforcement: GeoEnforcement::Reject,
         spin_pass_percent: 100,
+        brand_logos: None,
+        player_outcome_copy: None,
         created_at: None,
         updated_at: None,
     };
@@ -52,6 +54,8 @@ fn active_campaign_is_publicly_accessible() {
         stagger_schedule: None,
         geo_enforcement: GeoEnforcement::Reject,
         spin_pass_percent: 100,
+        brand_logos: None,
+        player_outcome_copy: None,
         created_at: None,
         updated_at: None,
     };

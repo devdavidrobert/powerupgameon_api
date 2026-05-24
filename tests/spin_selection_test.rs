@@ -29,6 +29,8 @@ fn sample_campaign(start: i64, end: i64) -> Campaign {
         stagger_schedule: None,
         geo_enforcement: GeoEnforcement::Reject,
         spin_pass_percent: 100,
+        brand_logos: None,
+        player_outcome_copy: None,
         created_at: None,
         updated_at: None,
     }

@@ -3,8 +3,9 @@ use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::application::CampaignService;
 use crate::features::campaigns::domain::{CampaignStatus, GeoEnforcement, StaggerMode};
 use crate::features::campaigns::infrastructure::{
-    build_update_payload, campaign_to_json, parse_challenge_time_value, parse_stagger_schedule,
-    validate_challenge_window, validate_slug, CampaignRepository, CampaignUpdateInput,
+    build_update_payload, campaign_to_json, parse_brand_logos, parse_challenge_time_value,
+    parse_player_outcome_copy, parse_stagger_schedule, validate_challenge_window, validate_slug, CampaignRepository,
+    CampaignUpdateInput,
 };
 use crate::features::campaigns::presentation::campaign_context::{CampaignContext, SlugPath};
 use crate::models::question::QuestionModel;
@@ -40,6 +41,10 @@ pub struct UpdateCampaignBody {
     pub geo_enforcement: Option<String>,
     #[serde(rename = "spinPassPercent")]
     pub spin_pass_percent: Option<i64>,
+    #[serde(rename = "brandLogos")]
+    pub brand_logos: Option<Value>,
+    #[serde(rename = "playerOutcomeCopy")]
+    pub player_outcome_copy: Option<Value>,
 }
 
 fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) -> ApiResult<()> {
@@ -77,6 +82,27 @@ fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) 
             ));
         }
         input.spin_pass_percent = Some(spin_pass_percent);
+    }
+    if let Some(logos) = body.brand_logos {
+        if logos.is_null() {
+            input.clear_brand_logos = true;
+            input.brand_logos = None;
+        } else if logos.is_array() && logos.as_array().is_some_and(|arr| arr.is_empty()) {
+            input.clear_brand_logos = true;
+            input.brand_logos = None;
+        } else {
+            input.brand_logos = Some(parse_brand_logos(&logos)?);
+            input.clear_brand_logos = false;
+        }
+    }
+    if let Some(copy) = body.player_outcome_copy {
+        if copy.is_null() {
+            input.clear_player_outcome_copy = true;
+            input.player_outcome_copy = None;
+        } else {
+            input.player_outcome_copy = Some(parse_player_outcome_copy(&copy)?);
+            input.clear_player_outcome_copy = false;
+        }
     }
     Ok(())
 }
@@ -157,6 +183,8 @@ pub async fn get_campaign_settings(
             "challengeStartTime": ctx.campaign.challenge_start_time,
             "challengeEndTime": ctx.campaign.challenge_end_time,
             "spinPassPercent": ctx.campaign.spin_pass_percent(),
+            "brandLogos": ctx.campaign.sorted_brand_logos(),
+            "playerOutcomeCopy": ctx.campaign.player_outcome_copy_or_default(),
             "updatedAt": ctx.campaign.updated_at,
         })),
     ))
@@ -173,6 +201,8 @@ pub async fn get_campaign_settings_admin(
         "staggerSchedule": ctx.campaign.stagger_schedule,
         "geoEnforcement": ctx.campaign.geo_enforcement.as_str(),
         "spinPassPercent": ctx.campaign.spin_pass_percent(),
+        "brandLogos": ctx.campaign.sorted_brand_logos(),
+        "playerOutcomeCopy": ctx.campaign.player_outcome_copy_or_default(),
     })))
 }
 
@@ -196,6 +226,8 @@ pub async fn update_campaign_settings(
         "staggerSchedule": updated.stagger_schedule,
         "geoEnforcement": updated.geo_enforcement.as_str(),
         "spinPassPercent": updated.spin_pass_percent(),
+        "brandLogos": updated.sorted_brand_logos(),
+        "playerOutcomeCopy": updated.player_outcome_copy_or_default(),
     })))
 }
 

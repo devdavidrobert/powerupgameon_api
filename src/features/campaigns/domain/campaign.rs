@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::player_outcome_copy::PlayerOutcomeCopy;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CampaignStatus {
@@ -83,6 +85,15 @@ pub struct StaggerStep {
     pub release_percent: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrandLogo {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
+    #[serde(rename = "sortOrder")]
+    pub sort_order: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Campaign {
     pub id: String,
@@ -102,6 +113,10 @@ pub struct Campaign {
     /// Minimum % of gradable questions answered correctly to earn a wheel spin (0–100).
     #[serde(rename = "spinPassPercent")]
     pub spin_pass_percent: i64,
+    #[serde(rename = "brandLogos", skip_serializing_if = "Option::is_none")]
+    pub brand_logos: Option<Vec<BrandLogo>>,
+    #[serde(rename = "playerOutcomeCopy", skip_serializing_if = "Option::is_none")]
+    pub player_outcome_copy: Option<PlayerOutcomeCopy>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
@@ -116,4 +131,16 @@ impl Campaign {
     pub fn spin_pass_percent(&self) -> i64 {
         self.spin_pass_percent.clamp(0, 100)
     }
+
+    pub fn sorted_brand_logos(&self) -> Vec<BrandLogo> {
+        let mut logos = self.brand_logos.clone().unwrap_or_default();
+        logos.sort_by_key(|logo| logo.sort_order);
+        logos
+    }
+
+    pub fn player_outcome_copy_or_default(&self) -> PlayerOutcomeCopy {
+        self.player_outcome_copy.clone().unwrap_or_default()
+    }
 }
+
+pub const MAX_BRAND_LOGOS: usize = 2;

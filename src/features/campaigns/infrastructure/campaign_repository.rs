@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::domain::{
-    Campaign, CampaignStatus, GeoEnforcement, StaggerMode, StaggerStep,
+    BrandLogo, Campaign, CampaignStatus, GeoEnforcement, MAX_BRAND_LOGOS, PlayerOutcomeCopy,
+    StaggerMode, StaggerStep,
 };
 use crate::features::campaigns::infrastructure::campaign_paths::CAMPAIGNS_COLLECTION;
 use crate::utils::firestore::millis_now;
@@ -215,6 +216,13 @@ pub fn map_campaign(doc: Map<String, Value>) -> Option<Campaign> {
             .and_then(|v| v.as_i64())
             .unwrap_or(100)
             .clamp(0, 100),
+        brand_logos: doc
+            .get("brandLogos")
+            .and_then(parse_brand_logos_from_value)
+            .filter(|logos| !logos.is_empty()),
+        player_outcome_copy: doc
+            .get("playerOutcomeCopy")
+            .and_then(parse_player_outcome_copy_from_value),
         created_at: doc
             .get("createdAt")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
@@ -236,6 +244,8 @@ pub fn campaign_to_json(campaign: &Campaign) -> Value {
         "staggerSchedule": campaign.stagger_schedule,
         "geoEnforcement": campaign.geo_enforcement.as_str(),
         "spinPassPercent": campaign.spin_pass_percent,
+        "brandLogos": campaign.sorted_brand_logos(),
+        "playerOutcomeCopy": campaign.player_outcome_copy_or_default(),
         "createdAt": campaign.created_at,
         "updatedAt": campaign.updated_at,
     })
@@ -313,6 +323,29 @@ pub fn build_update_payload(body: &CampaignUpdateInput) -> ApiResult<Map<String,
             json!(spin_pass_percent.clamp(0, 100)),
         );
     }
+    if body.clear_brand_logos {
+        payload.insert("brandLogos".into(), Value::Null);
+    } else if let Some(logos) = &body.brand_logos {
+        payload.insert(
+            "brandLogos".into(),
+            json!(logos
+                .iter()
+                .map(|logo| json!({
+                    "url": logo.url,
+                    "alt": logo.alt,
+                    "sortOrder": logo.sort_order,
+                }))
+                .collect::<Vec<_>>()),
+        );
+    }
+    if body.clear_player_outcome_copy {
+        payload.insert("playerOutcomeCopy".into(), Value::Null);
+    } else if let Some(copy) = &body.player_outcome_copy {
+        payload.insert(
+            "playerOutcomeCopy".into(),
+            serde_json::to_value(copy).map_err(|e| ApiError::Internal(e.into()))?,
+        );
+    }
     Ok(payload)
 }
 
@@ -327,6 +360,10 @@ pub struct CampaignUpdateInput {
     pub clear_stagger_schedule: bool,
     pub geo_enforcement: Option<GeoEnforcement>,
     pub spin_pass_percent: Option<i64>,
+    pub brand_logos: Option<Vec<BrandLogo>>,
+    pub clear_brand_logos: bool,
+    pub player_outcome_copy: Option<PlayerOutcomeCopy>,
+    pub clear_player_outcome_copy: bool,
 }
 
 pub fn parse_challenge_time_value(value: &Value) -> ApiResult<Value> {
@@ -383,6 +420,151 @@ pub fn validate_challenge_window(payload: &Map<String, Value>) -> ApiResult<()> 
     Ok(())
 }
 
+pub fn parse_brand_logos_from_value(value: &Value) -> Option<Vec<BrandLogo>> {
+    value.as_array().map(|arr| {
+        arr.iter()
+            .filter_map(|item| {
+                Some(BrandLogo {
+                    url: item.get("url")?.as_str()?.trim().to_string(),
+                    alt: item
+                        .get("alt")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                    sort_order: item.get("sortOrder").and_then(|v| v.as_i64()).unwrap_or(0),
+                })
+            })
+            .filter(|logo| !logo.url.is_empty())
+            .collect()
+    })
+}
+
+pub fn parse_brand_logos(value: &Value) -> ApiResult<Vec<BrandLogo>> {
+    let Some(arr) = value.as_array() else {
+        return Err(ApiError::bad_request("brandLogos must be an array."));
+    };
+    if arr.is_empty() {
+        return Ok(vec![]);
+    }
+    if arr.len() > MAX_BRAND_LOGOS {
+        return Err(ApiError::bad_request(format!(
+            "brandLogos may contain at most {MAX_BRAND_LOGOS} logos."
+        )));
+    }
+
+    let mut logos = Vec::new();
+    for (index, item) in arr.iter().enumerate() {
+        let url = item
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ApiError::bad_request("Each brand logo needs a url."))?;
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err(ApiError::bad_request(
+                "Brand logo url must start with http:// or https://.",
+            ));
+        }
+        let alt = item
+            .get("alt")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let sort_order = item
+            .get("sortOrder")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(index as i64);
+        logos.push(BrandLogo {
+            url: url.to_string(),
+            alt,
+            sort_order,
+        });
+    }
+
+    logos.sort_by_key(|logo| logo.sort_order);
+    Ok(logos)
+}
+
+pub fn parse_player_outcome_copy_from_value(value: &Value) -> Option<PlayerOutcomeCopy> {
+    parse_player_outcome_copy(value).ok()
+}
+
+pub fn parse_player_outcome_copy(value: &Value) -> ApiResult<PlayerOutcomeCopy> {
+    use crate::features::campaigns::domain::{
+        trim_optional, MAX_EXIT_BUTTON_LABEL_LEN, MAX_OUTCOME_FIELD_LEN, MAX_OUTCOME_TITLE_LEN,
+    };
+
+    if value.is_null() {
+        return Ok(PlayerOutcomeCopy::default());
+    }
+
+    let Some(obj) = value.as_object() else {
+        return Err(ApiError::bad_request("playerOutcomeCopy must be an object."));
+    };
+
+    let copy = PlayerOutcomeCopy {
+        win_title: trim_optional(
+            obj.get("winTitle")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            MAX_OUTCOME_TITLE_LEN,
+        ),
+        win_message: trim_optional(
+            obj.get("winMessage")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            MAX_OUTCOME_FIELD_LEN,
+        ),
+        consolation_title: trim_optional(
+            obj.get("consolationTitle")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            MAX_OUTCOME_TITLE_LEN,
+        ),
+        consolation_message: trim_optional(
+            obj.get("consolationMessage")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            MAX_OUTCOME_FIELD_LEN,
+        ),
+        below_threshold_title: trim_optional(
+            obj.get("belowThresholdTitle")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            MAX_OUTCOME_TITLE_LEN,
+        ),
+        below_threshold_message: trim_optional(
+            obj.get("belowThresholdMessage")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            MAX_OUTCOME_FIELD_LEN,
+        ),
+        exit_button_label: trim_optional(
+            obj.get("exitButtonLabel")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            MAX_EXIT_BUTTON_LABEL_LEN,
+        ),
+        exit_button_url: trim_optional(
+            obj.get("exitButtonUrl")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            MAX_OUTCOME_FIELD_LEN,
+        ),
+    };
+
+    if let Some(url) = &copy.exit_button_url {
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err(ApiError::bad_request(
+                "exitButtonUrl must start with http:// or https://.",
+            ));
+        }
+    }
+
+    Ok(copy)
+}
+
 pub fn validate_slug(slug: &str) -> ApiResult<()> {
     if slug.is_empty() || slug.len() > 64 {
         return Err(ApiError::bad_request("slug must be 1-64 characters."));
@@ -428,5 +610,27 @@ mod tests {
         .unwrap();
 
         assert!(payload.get("staggerSchedule").and_then(|v| v.as_array()).is_some());
+    }
+
+    #[test]
+    fn parse_brand_logos_rejects_more_than_two() {
+        let value = json!([
+            { "url": "https://a.example/logo.png", "sortOrder": 0 },
+            { "url": "https://b.example/logo.png", "sortOrder": 1 },
+            { "url": "https://c.example/logo.png", "sortOrder": 2 }
+        ]);
+        assert!(parse_brand_logos(&value).is_err());
+    }
+
+    #[test]
+    fn parse_brand_logos_sorts_by_sort_order() {
+        let value = json!([
+            { "url": "https://b.example/logo.png", "sortOrder": 1, "alt": "B" },
+            { "url": "https://a.example/logo.png", "sortOrder": 0, "alt": "A" }
+        ]);
+        let logos = parse_brand_logos(&value).unwrap();
+        assert_eq!(logos.len(), 2);
+        assert_eq!(logos[0].url, "https://a.example/logo.png");
+        assert_eq!(logos[1].url, "https://b.example/logo.png");
     }
 }

@@ -4,17 +4,42 @@ use crate::features::campaigns::domain::CampaignStatus;
 use crate::features::campaigns::presentation::{
     CampaignContext, PublicCampaignContext, SlugIdPath,
 };
+use crate::features::media::application::read_uploaded_image;
+use crate::features::media::domain::extension_for_content_type;
+use crate::features::media::infrastructure::upload_public_image;
 use crate::features::spin::domain::is_consolation_prize;
 use crate::models::prize::PrizeModel;
 use crate::utils::firestore::document_id_from_map;
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     http::{header, HeaderMap, StatusCode},
     Json,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
+
+fn apply_image_url_update(updates: &mut Map<String, Value>, image_url: &Value) -> ApiResult<()> {
+    if image_url.is_null() {
+        updates.insert("imageUrl".into(), Value::Null);
+        return Ok(());
+    }
+    let Some(url) = image_url.as_str() else {
+        return Err(ApiError::bad_request("imageUrl must be a string or null."));
+    };
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        updates.insert("imageUrl".into(), Value::Null);
+        return Ok(());
+    }
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err(ApiError::bad_request(
+            "imageUrl must start with http:// or https://.",
+        ));
+    }
+    updates.insert("imageUrl".into(), json!(trimmed));
+    Ok(())
+}
 
 pub async fn get_all_prizes(
     State(state): State<Arc<AppState>>,
@@ -48,6 +73,8 @@ pub struct PrizeBody {
     #[serde(rename = "isRealPrize")]
     pub is_real_prize: Option<bool>,
     pub order: Option<i64>,
+    #[serde(rename = "imageUrl")]
+    pub image_url: Option<Value>,
 }
 
 pub async fn get_all_prizes_admin(
@@ -77,6 +104,9 @@ pub async fn create_prize(
         json!(body.is_real_prize.unwrap_or(true)),
     );
     data.insert("order".into(), json!(order));
+    if let Some(image_url) = body.image_url.as_ref() {
+        apply_image_url_update(&mut data, image_url)?;
+    }
     let prize = PrizeModel::create(&state, &ctx.paths, data).await?;
     Ok((StatusCode::CREATED, SuccessResponse::data(prize)))
 }
@@ -95,7 +125,11 @@ pub async fn update_prize(
     }
     let mut updates = Map::new();
     if let Some(name) = body.name {
-        updates.insert("name".into(), json!(name.trim()));
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::bad_request("name cannot be empty."));
+        }
+        updates.insert("name".into(), json!(trimmed));
     }
     if let Some(is_real) = body.is_real_prize {
         updates.insert("isRealPrize".into(), json!(is_real));
@@ -103,6 +137,17 @@ pub async fn update_prize(
     if let Some(order) = body.order {
         updates.insert("order".into(), json!(order));
     }
+    if let Some(image_url) = body.image_url.as_ref() {
+        apply_image_url_update(&mut updates, image_url)?;
+    }
+
+    if updates.is_empty() {
+        let prize = PrizeModel::find_by_id(&state, &ctx.paths, &path.id)
+            .await?
+            .ok_or_else(|| ApiError::bad_request("Prize not found."))?;
+        return Ok(SuccessResponse::data(prize));
+    }
+
     let updated = PrizeModel::update(&state, &ctx.paths, &path.id, updates).await?;
     Ok(SuccessResponse::data(updated))
 }
@@ -140,4 +185,60 @@ pub async fn delete_prize(
 
     PrizeModel::delete(&state, &ctx.paths, &path.id).await?;
     Ok(SuccessResponse::message("Prize deleted."))
+}
+
+pub async fn upload_prize_image(
+    State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
+    Path(path): Path<SlugIdPath>,
+    mut multipart: Multipart,
+) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
+    if PrizeModel::find_by_id(&state, &ctx.paths, &path.id)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::bad_request("Prize not found."));
+    }
+
+    let uploaded = read_uploaded_image(&mut multipart).await?;
+    let ext = extension_for_content_type(&uploaded.content_type)
+        .ok_or_else(|| ApiError::bad_request("Unsupported image content type."))?;
+    let object_path = format!(
+        "campaigns/{}/prizes/{}-{}.{}",
+        ctx.slug(),
+        path.id,
+        uuid::Uuid::new_v4(),
+        ext
+    );
+
+    let url =
+        upload_public_image(&state, object_path, &uploaded.content_type, &uploaded.bytes).await?;
+
+    let mut updates = Map::new();
+    updates.insert("imageUrl".into(), json!(url));
+    let prize = PrizeModel::update(&state, &ctx.paths, &path.id, updates).await?;
+
+    Ok(SuccessResponse::data(prize))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_image_url_update_accepts_https_url() {
+        let mut updates = Map::new();
+        apply_image_url_update(&mut updates, &json!("https://cdn.example/prize.png")).unwrap();
+        assert_eq!(
+            updates.get("imageUrl").and_then(|v| v.as_str()),
+            Some("https://cdn.example/prize.png")
+        );
+    }
+
+    #[test]
+    fn apply_image_url_update_clears_on_null() {
+        let mut updates = Map::new();
+        apply_image_url_update(&mut updates, &Value::Null).unwrap();
+        assert_eq!(updates.get("imageUrl"), Some(&Value::Null));
+    }
 }
