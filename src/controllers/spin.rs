@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::PublicCampaignContext;
 use crate::features::inventory::application::InventoryService;
+use crate::features::inventory::domain::InventorySlot;
 use crate::features::inventory::infrastructure::InventoryRepository;
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
@@ -14,11 +15,13 @@ use rand::Rng;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 const DEFAULT_ANIMATION_MS: i64 = 5000;
-const MAX_CLAIM_RETRIES: usize = 3;
+const MAX_CLAIM_RETRIES: usize = 8;
+
+type SpinPoolEntry = (serde_json::Map<String, Value>, String);
 
 #[derive(Deserialize)]
 pub struct SpinBody {
@@ -68,9 +71,7 @@ pub async fn spin_wheel(
         let order = won
             .and_then(|p| p.get("order").and_then(|v| v.as_i64()))
             .unwrap_or(0);
-        let is_real = won
-            .and_then(|p| p.get("isRealPrize").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
+        let is_real = won.map(is_real_prize).unwrap_or(false);
         return Ok(SuccessResponse::data(json!({
             "prize": { "name": prize_name, "order": order, "isRealPrize": is_real },
             "animationDuration": DEFAULT_ANIMATION_MS,
@@ -112,7 +113,8 @@ pub async fn spin_wheel(
     let mut sorted = prizes.clone();
     sorted.sort_by_key(|p| p.get("order").and_then(|v| v.as_i64()).unwrap_or(0));
 
-    let mut last_error = ApiError::bad_request("Prize inventory exhausted.");
+    let mut excluded_real_ids: HashSet<String> = HashSet::new();
+    let mut last_error = ApiError::bad_request("No prizes available to spin.");
 
     for attempt in 0..MAX_CLAIM_RETRIES {
         let pool = build_spin_pool(
@@ -121,21 +123,19 @@ pub async fn spin_wheel(
             &ctx.campaign,
             &location_id,
             &sorted,
+            &excluded_real_ids,
         )
         .await?;
 
         if pool.is_empty() {
-            return Err(ApiError::bad_request("Prize inventory exhausted."));
+            break;
         }
 
         let pick_idx = rand::thread_rng().gen_range(0..pool.len());
         let (won, prize_id) = &pool[pick_idx];
         let prize_name = won.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let order = won.get("order").and_then(|v| v.as_i64()).unwrap_or(0);
-        let is_real = won
-            .get("isRealPrize")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let is_real = is_real_prize(won);
 
         match InventoryRepository::claim_atomic(
             &state,
@@ -183,7 +183,7 @@ pub async fn spin_wheel(
                         "prize": {
                             "name": prev_name,
                             "order": prev.and_then(|p| p.get("order").and_then(|v| v.as_i64())).unwrap_or(order),
-                            "isRealPrize": prev.and_then(|p| p.get("isRealPrize").and_then(|v| v.as_bool())).unwrap_or(false),
+                            "isRealPrize": prev.map(is_real_prize).unwrap_or(false),
                         },
                         "animationDuration": DEFAULT_ANIMATION_MS,
                         "idempotent": true,
@@ -191,6 +191,9 @@ pub async fn spin_wheel(
                 }
             }
             Err(ApiError::WithStatus { code: Some(code), .. }) if code == "INVENTORY_EXHAUSTED" => {
+                if is_real {
+                    excluded_real_ids.insert(prize_id.clone());
+                }
                 last_error = ApiError::bad_request("Prize inventory exhausted.");
                 continue;
             }
@@ -214,6 +217,52 @@ pub async fn spin_wheel(
         }
     }
 
+    if let Some((won, prize_id)) = pick_consolation_fallback(&sorted) {
+        let prize_name = won.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let order = won.get("order").and_then(|v| v.as_i64()).unwrap_or(0);
+        match InventoryRepository::claim_atomic(
+            &state,
+            &ctx.paths,
+            &ctx.campaign,
+            &session_id,
+            &location_id,
+            &prize_id,
+            prize_name,
+            false,
+            &fingerprint,
+        )
+        .await
+        {
+            Ok(result) if result.finalized => {
+                return Ok(SuccessResponse::data(json!({
+                    "prize": {
+                        "name": prize_name,
+                        "order": order,
+                        "isRealPrize": false,
+                    },
+                    "animationDuration": DEFAULT_ANIMATION_MS,
+                })));
+            }
+            Ok(result) => {
+                if let Some(prev_name) = result.previous_prize {
+                    let prev = sorted
+                        .iter()
+                        .find(|p| p.get("name").and_then(|v| v.as_str()) == Some(prev_name.as_str()));
+                    return Ok(SuccessResponse::data(json!({
+                        "prize": {
+                            "name": prev_name,
+                            "order": prev.and_then(|p| p.get("order").and_then(|v| v.as_i64())).unwrap_or(order),
+                            "isRealPrize": prev.map(is_real_prize).unwrap_or(false),
+                        },
+                        "animationDuration": DEFAULT_ANIMATION_MS,
+                        "idempotent": true,
+                    })));
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
     Err(last_error)
 }
 
@@ -223,45 +272,160 @@ async fn build_spin_pool(
     campaign: &crate::features::campaigns::domain::Campaign,
     location_id: &str,
     prizes: &[serde_json::Map<String, Value>],
-) -> ApiResult<Vec<(serde_json::Map<String, Value>, String)>> {
+    excluded_real_ids: &HashSet<String>,
+) -> ApiResult<Vec<SpinPoolEntry>> {
     let slots = InventoryRepository::find_by_location(state, paths, location_id).await?;
     let now = chrono::Utc::now().timestamp_millis();
 
-    let slot_by_prize: HashMap<String, _> = slots
+    let slot_by_prize: HashMap<String, InventorySlot> = slots
         .into_iter()
         .map(|s| (s.prize_id.clone(), s))
         .collect();
 
-    let mut available = Vec::new();
+    let (mut real_claimable, consolation) =
+        partition_spin_pool(prizes, &slot_by_prize, campaign, now, excluded_real_ids);
+
+    if !real_claimable.is_empty() {
+        real_claimable.extend(consolation);
+        return Ok(real_claimable);
+    }
+
+    Ok(consolation)
+}
+
+fn partition_spin_pool(
+    prizes: &[serde_json::Map<String, Value>],
+    slot_by_prize: &HashMap<String, InventorySlot>,
+    campaign: &crate::features::campaigns::domain::Campaign,
+    now: i64,
+    excluded_real_ids: &HashSet<String>,
+) -> (Vec<SpinPoolEntry>, Vec<SpinPoolEntry>) {
+    let mut real_claimable = Vec::new();
+    let mut consolation = Vec::new();
+
     for prize in prizes {
-        let prize_id = prize
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Prize missing id")))?
-            .to_string();
-        let is_real = prize.get("isRealPrize").and_then(|v| v.as_bool()).unwrap_or(true);
-        if !is_real {
-            available.push((prize.clone(), prize_id));
+        let Some(prize_id) = prize.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let prize_id = prize_id.to_string();
+
+        if is_consolation_prize(prize) {
+            consolation.push((prize.clone(), prize_id));
             continue;
         }
+
+        if excluded_real_ids.contains(&prize_id) {
+            continue;
+        }
+
         if let Some(slot) = slot_by_prize.get(&prize_id) {
             let releasable = InventoryService::releasable_now(campaign, slot, now);
             if slot.is_claimable(releasable) {
-                available.push((prize.clone(), prize_id));
+                real_claimable.push((prize.clone(), prize_id));
             }
         }
     }
 
-    if !available.is_empty() {
-        return Ok(available);
-    }
+    (real_claimable, consolation)
+}
 
-    Ok(prizes
+fn pick_consolation_fallback(prizes: &[serde_json::Map<String, Value>]) -> Option<SpinPoolEntry> {
+    prizes
         .iter()
-        .filter(|p| !p.get("isRealPrize").and_then(|v| v.as_bool()).unwrap_or(true))
+        .filter(|p| is_consolation_prize(p))
         .filter_map(|p| {
             let id = p.get("id")?.as_str()?.to_string();
             Some((p.clone(), id))
         })
-        .collect())
+        .next()
+}
+
+fn is_consolation_prize(prize: &serde_json::Map<String, Value>) -> bool {
+    prize.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false)
+}
+
+fn is_real_prize(prize: &serde_json::Map<String, Value>) -> bool {
+    !is_consolation_prize(prize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::campaigns::domain::{Campaign, CampaignStatus, GeoEnforcement, StaggerMode};
+    use serde_json::Map;
+    use std::collections::HashMap;
+
+    fn sample_campaign() -> Campaign {
+        Campaign {
+            id: "camp-1".into(),
+            slug: "test".into(),
+            name: "Test".into(),
+            status: CampaignStatus::Active,
+            challenge_start_time: None,
+            challenge_end_time: None,
+            stagger_mode: StaggerMode::Immediate,
+            stagger_schedule: None,
+            geo_enforcement: GeoEnforcement::Reject,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    fn prize(name: &str, id: &str, order: i64, is_real: bool) -> serde_json::Map<String, Value> {
+        Map::from_iter([
+            ("name".into(), json!(name)),
+            ("id".into(), json!(id)),
+            ("order".into(), json!(order)),
+            ("isRealPrize".into(), json!(is_real)),
+        ])
+    }
+
+    #[test]
+    fn partition_includes_consolation_when_real_inventory_is_exhausted() {
+        let prizes = vec![
+            prize("Steam Can", "p1", 1, true),
+            prize("So Close", "p2", 2, false),
+        ];
+        let slot = InventorySlot {
+            id: "loc_p1".into(),
+            location_id: "loc".into(),
+            prize_id: "p1".into(),
+            total_quantity: 1,
+            awarded_count: 1,
+            updated_at: None,
+        };
+        let slots = HashMap::from([("p1".into(), slot)]);
+        let excluded = HashSet::new();
+
+        let (real, consolation) =
+            partition_spin_pool(&prizes, &slots, &sample_campaign(), 0, &excluded);
+
+        assert!(real.is_empty());
+        assert_eq!(consolation.len(), 1);
+        assert_eq!(consolation[0].0.get("name").and_then(|v| v.as_str()), Some("So Close"));
+    }
+
+    #[test]
+    fn partition_mixes_claimable_real_and_consolation() {
+        let prizes = vec![
+            prize("Steam Can", "p1", 1, true),
+            prize("So Close", "p2", 2, false),
+        ];
+        let slot = InventorySlot {
+            id: "loc_p1".into(),
+            location_id: "loc".into(),
+            prize_id: "p1".into(),
+            total_quantity: 5,
+            awarded_count: 0,
+            updated_at: None,
+        };
+        let slots = HashMap::from([("p1".into(), slot)]);
+        let excluded = HashSet::new();
+
+        let (real, consolation) =
+            partition_spin_pool(&prizes, &slots, &sample_campaign(), 0, &excluded);
+
+        assert_eq!(real.len(), 1);
+        assert_eq!(consolation.len(), 1);
+    }
 }

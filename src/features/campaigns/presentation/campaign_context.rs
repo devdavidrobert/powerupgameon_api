@@ -101,7 +101,15 @@ pub fn extract_slug_from_path(path: &str) -> ApiResult<String> {
             }
         }
     }
-    Err(ApiError::bad_request("Campaign slug missing from path."))
+    Err(campaign_required_error())
+}
+
+fn campaign_required_error() -> ApiError {
+    ApiError::with_code(
+        StatusCode::BAD_REQUEST,
+        "CAMPAIGN_REQUIRED",
+        "You must choose a campaign to play.",
+    )
 }
 
 pub fn resolve_campaign_slug(path: &str, query: Option<&str>, headers: &HeaderMap) -> ApiResult<String> {
@@ -124,7 +132,7 @@ pub fn resolve_campaign_slug(path: &str, query: Option<&str>, headers: &HeaderMa
         }
     }
 
-    Err(ApiError::bad_request("Campaign slug missing from path."))
+    Err(campaign_required_error())
 }
 
 async fn load_campaign_context(

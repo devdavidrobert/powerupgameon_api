@@ -1,4 +1,6 @@
-use powerupgameon_api::features::campaigns::presentation::extract_slug_from_path;
+use powerupgameon_api::features::campaigns::presentation::{extract_slug_from_path, resolve_campaign_slug};
+use powerupgameon_api::error::ApiError;
+use axum::http::HeaderMap;
 
 #[test]
 fn slug_extraction_from_nested_paths() {
@@ -48,4 +50,16 @@ fn active_campaign_is_publicly_accessible() {
         updated_at: None,
     };
     assert!(campaign.is_publicly_accessible());
+}
+
+#[test]
+fn missing_campaign_slug_returns_campaign_required() {
+    let err = resolve_campaign_slug("/api/health", None, &HeaderMap::new()).unwrap_err();
+    assert!(matches!(
+        err,
+        ApiError::WithStatus {
+            code: Some(ref code),
+            ..
+        } if code == "CAMPAIGN_REQUIRED"
+    ));
 }
