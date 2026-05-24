@@ -3,10 +3,12 @@ use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::PublicCampaignContext;
 use crate::features::inventory::domain::InventorySlot;
 use crate::features::inventory::infrastructure::InventoryRepository;
+use crate::features::locations::infrastructure::LocationRepository;
 use crate::features::spin::application::{SpinService, MAX_CLAIM_RETRIES};
 use crate::features::spin::domain::{
-    has_consolation_prize, is_real_prize, pick_wheel_fallback, prize_id_from_map,
-    prize_to_wheel_json, wheel_display_prizes, has_consolation_at_location, SpinPrize, SpinResult,
+    has_consolation_at_location, has_consolation_prize, is_real_prize, pick_wheel_fallback,
+    partition_spin_pool_no_geofence, prize_id_from_map, prize_to_wheel_json,
+    wheel_display_prizes, wheel_display_prizes_no_geofence, SpinPrize, SpinResult,
 };
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
@@ -87,6 +89,29 @@ fn resolve_wheel_session_id(
     Ok(session_id.to_string())
 }
 
+async fn registration_location_id(
+    state: &AppState,
+    paths: &crate::features::campaigns::infrastructure::CampaignPaths,
+    registration: &Map<String, Value>,
+) -> ApiResult<Option<String>> {
+    if let Some(location_id) = registration
+        .get("locationId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(Some(location_id.to_string()));
+    }
+
+    if LocationRepository::has_enabled_locations(state, paths).await? {
+        return Err(ApiError::bad_request(
+            "Registration is missing location context for the prize wheel.",
+        ));
+    }
+
+    Ok(None)
+}
+
 pub async fn get_wheel_prizes(
     State(state): State<Arc<AppState>>,
     PublicCampaignContext(ctx): PublicCampaignContext,
@@ -98,39 +123,51 @@ pub async fn get_wheel_prizes(
         .await?
         .ok_or_else(|| ApiError::bad_request("Registration not found for this session."))?;
 
-    let location_id = registration
-        .get("locationId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ApiError::bad_request("Registration is missing location context for the prize wheel.")
-        })?;
+    let location_id = registration_location_id(&state, &ctx.paths, &registration).await?;
 
     let prizes = PrizeModel::find_all(&state, &ctx.paths).await?;
     if prizes.is_empty() {
         return Err(ApiError::bad_request("No prizes configured."));
     }
 
-    let slots = InventoryRepository::find_by_location(&state, &ctx.paths, location_id).await?;
-    let slot_by_prize: HashMap<String, InventorySlot> =
-        slots.into_iter().map(|s| (s.prize_id.clone(), s)).collect();
-    let now = chrono::Utc::now().timestamp_millis();
+    let wheel = if let Some(location_id) = location_id.as_deref() {
+        let slots = InventoryRepository::find_by_location(&state, &ctx.paths, location_id).await?;
+        let slot_by_prize: HashMap<String, InventorySlot> =
+            slots.into_iter().map(|s| (s.prize_id.clone(), s)).collect();
+        let now = chrono::Utc::now().timestamp_millis();
 
-    if !has_consolation_at_location(&prizes, &slot_by_prize) {
-        return Err(ApiError::with_code(
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-            "NO_CONSOLATION_PRIZES",
-            "No consolation prize is configured for your location. Ask an admin to add inventory for a consolation prize at this venue.",
-        ));
-    }
+        if !has_consolation_at_location(&prizes, &slot_by_prize) {
+            return Err(ApiError::with_code(
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "NO_CONSOLATION_PRIZES",
+                "No consolation prize is configured for your location. Ask an admin to add inventory for a consolation prize at this venue.",
+            ));
+        }
 
-    let wheel = wheel_display_prizes(&prizes, &slot_by_prize, &ctx.campaign, now);
-    if wheel.is_empty() {
-        return Err(ApiError::with_code(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "SPIN_POOL_EMPTY",
-            "No prizes are configured for your location.",
-        ));
-    }
+        let wheel = wheel_display_prizes(&prizes, &slot_by_prize, &ctx.campaign, now);
+        if wheel.is_empty() {
+            return Err(ApiError::with_code(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "SPIN_POOL_EMPTY",
+                "No prizes are configured for your location.",
+            ));
+        }
+        wheel
+    } else {
+        if !has_consolation_prize(&prizes) {
+            return Err(ApiError::with_code(
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "NO_CONSOLATION_PRIZES",
+                "This campaign has no consolation prizes configured.",
+            ));
+        }
+
+        let wheel = wheel_display_prizes_no_geofence(&prizes);
+        if wheel.is_empty() {
+            return Err(ApiError::bad_request("No prizes configured."));
+        }
+        wheel
+    };
 
     let data: Vec<Map<String, Value>> = wheel.iter().map(prize_to_wheel_json).collect();
 
@@ -211,13 +248,7 @@ pub async fn spin_wheel(
         ));
     }
 
-    let location_id = registration
-        .get("locationId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ApiError::bad_request("Registration is missing location context for prize allocation.")
-        })?
-        .to_string();
+    let location_id = registration_location_id(&state, &ctx.paths, &registration).await?;
 
     let prizes = PrizeModel::find_all(&state, &ctx.paths).await?;
     if prizes.is_empty() {
@@ -240,6 +271,61 @@ pub async fn spin_wheel(
 
     let mut sorted = prizes.clone();
     sorted.sort_by_key(|p| p.get("order").and_then(|v| v.as_i64()).unwrap_or(0));
+
+    if location_id.is_none() {
+        let (_, consolation) = partition_spin_pool_no_geofence(&sorted);
+        if consolation.is_empty() {
+            return Err(ApiError::with_code(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "SPIN_POOL_EMPTY",
+                "No prizes are currently available to spin.",
+            ));
+        }
+
+        let entry = {
+            let mut rng = rand::thread_rng();
+            SpinService::pick_consolation_uniform(&consolation, &mut rng)
+        };
+        if entry.1.is_empty() {
+            if let Some(entry) = pick_wheel_fallback(&sorted) {
+                return SpinService::finalize_spin_claim(
+                    &state,
+                    &ctx,
+                    &req_ctx,
+                    &session_id,
+                    "",
+                    &sorted,
+                    &fingerprint,
+                    entry,
+                    false,
+                    None,
+                )
+                .await;
+            }
+            return Err(ApiError::with_code(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "SPIN_POOL_EMPTY",
+                "No prizes are currently available to spin.",
+            ));
+        }
+
+        log_spin_slow(&state, &req_ctx, started);
+        return SpinService::finalize_spin_claim(
+            &state,
+            &ctx,
+            &req_ctx,
+            &session_id,
+            "",
+            &sorted,
+            &fingerprint,
+            entry,
+            false,
+            None,
+        )
+        .await;
+    }
+
+    let location_id = location_id.expect("geofenced spin requires location_id");
 
     let slots = InventoryRepository::find_by_location(&state, &ctx.paths, &location_id).await?;
     let slot_by_prize: HashMap<String, InventorySlot> =

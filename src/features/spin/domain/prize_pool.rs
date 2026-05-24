@@ -129,6 +129,25 @@ pub fn wheel_display_prizes(
     out
 }
 
+/// Campaigns without geofence locations show every configured prize on the wheel.
+pub fn wheel_display_prizes_no_geofence(prizes: &[Map<String, Value>]) -> Vec<Map<String, Value>> {
+    let mut out = prizes.to_vec();
+    out.sort_by_key(|p| p.get("order").and_then(|v| v.as_i64()).unwrap_or(0));
+    out
+}
+
+/// Spin pool for campaigns without geofence locations — consolation prizes only.
+pub fn partition_spin_pool_no_geofence(
+    prizes: &[Map<String, Value>],
+) -> (Vec<ClaimableRealEntry>, Vec<SpinPoolEntry>) {
+    let consolation = prizes
+        .iter()
+        .filter(|prize| is_consolation_prize(prize))
+        .filter_map(|prize| prize_entry(prize))
+        .collect();
+    (Vec::new(), consolation)
+}
+
 /// Public wheel payload — strips Firestore metadata.
 pub fn prize_to_wheel_json(prize: &Map<String, Value>) -> Map<String, Value> {
     let mut out = Map::new();

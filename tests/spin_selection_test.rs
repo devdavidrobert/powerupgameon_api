@@ -231,6 +231,41 @@ fn wheel_display_includes_exhausted_real_prize() {
 }
 
 #[test]
+fn wheel_display_no_geofence_includes_all_prizes() {
+    use powerupgameon_api::features::spin::domain::wheel_display_prizes_no_geofence;
+
+    let prizes = vec![
+        prize("Steam Can", "p1", 1, true),
+        prize("So Close", "p2", 2, false),
+    ];
+
+    let wheel = wheel_display_prizes_no_geofence(&prizes);
+    let names: Vec<_> = wheel
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(names, vec!["Steam Can", "So Close"]);
+}
+
+#[test]
+fn partition_no_geofence_only_includes_consolation_prizes() {
+    use powerupgameon_api::features::spin::domain::partition_spin_pool_no_geofence;
+
+    let prizes = vec![
+        prize("Steam Can", "p1", 1, true),
+        prize("So Close", "p2", 2, false),
+    ];
+
+    let (real, consolation) = partition_spin_pool_no_geofence(&prizes);
+    assert!(real.is_empty());
+    assert_eq!(consolation.len(), 1);
+    assert_eq!(
+        consolation[0].0.get("name").and_then(|v| v.as_str()),
+        Some("So Close")
+    );
+}
+
+#[test]
 fn schedule_pressure_favors_real_when_behind_schedule() {
     let campaign = sample_campaign(0, 1000);
     let now = 500;
