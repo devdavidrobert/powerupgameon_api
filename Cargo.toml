@@ -27,7 +27,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "1"
 anyhow = "1"
 dotenvy = "0.15"
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 ring = "0.17"
 base64 = "0.22"
 rand = "0.8"
