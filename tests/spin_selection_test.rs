@@ -266,6 +266,23 @@ fn partition_no_geofence_only_includes_consolation_prizes() {
 }
 
 #[test]
+fn prize_to_wheel_json_includes_image_url() {
+    use powerupgameon_api::features::spin::domain::prize_to_wheel_json;
+
+    let mut prize = prize("Steam Can", "p1", 1, true);
+    prize.insert(
+        "imageUrl".into(),
+        json!("https://firebasestorage.googleapis.com/v0/b/example/o/p.png"),
+    );
+
+    let wheel = prize_to_wheel_json(&prize);
+    assert_eq!(
+        wheel.get("imageUrl").and_then(|v| v.as_str()),
+        Some("https://firebasestorage.googleapis.com/v0/b/example/o/p.png")
+    );
+}
+
+#[test]
 fn schedule_pressure_favors_real_when_behind_schedule() {
     let campaign = sample_campaign(0, 1000);
     let now = 500;

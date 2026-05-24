@@ -165,6 +165,14 @@ pub fn prize_to_wheel_json(prize: &Map<String, Value>) -> Map<String, Value> {
     } else {
         out.insert("isRealPrize".into(), Value::Bool(true));
     }
+    if let Some(image_url) = prize
+        .get("imageUrl")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        out.insert("imageUrl".into(), Value::String(image_url.to_string()));
+    }
     out
 }
 
