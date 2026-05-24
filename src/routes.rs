@@ -13,7 +13,6 @@ use crate::features::locations::presentation::{
 };
 use crate::middleware::auth::{authenticate_middleware, require_admin_middleware};
 use crate::middleware::campaign_context::inject_campaign_context;
-use crate::middleware::vercel_path::restore_vercel_path;
 use crate::middleware::csrf::{mint_csrf_token, require_csrf_middleware};
 use crate::middleware::rate_limit::{
     global_rate_limit_middleware, registration_rate_limit_middleware,
@@ -223,7 +222,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         ))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .layer(middleware::from_fn(restore_vercel_path))
         .with_state(state)
 }
 
