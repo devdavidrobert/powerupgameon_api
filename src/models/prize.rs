@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::infrastructure::CampaignPaths;
-use crate::utils::firestore::millis_now;
+use crate::utils::firestore::{document_id_from_map, millis_now};
 use firestore::FirestoreQueryDirection;
 use serde_json::{json, Map, Value};
 
@@ -33,7 +33,7 @@ impl PrizeModel {
             .map(|mut row| {
                 row.entry("isRealPrize").or_insert(json!(true));
                 if !row.contains_key("id") {
-                    if let Some(id) = doc_id(&row) {
+                    if let Some(id) = document_id_from_map(&row) {
                         row.insert("id".into(), json!(id));
                     }
                 }
@@ -47,6 +47,10 @@ impl PrizeModel {
         paths: &CampaignPaths,
         id: &str,
     ) -> ApiResult<Option<Map<String, Value>>> {
+        if id.trim().is_empty() {
+            return Ok(None);
+        }
+
         let parent = paths.parent_str(&state.db.client)?;
         let doc: Option<Map<String, Value>> = state
             .db
@@ -76,6 +80,7 @@ impl PrizeModel {
         let mut payload = data;
         payload.insert("createdAt".into(), json!(millis_now()));
         let id = uuid::Uuid::new_v4().to_string();
+        payload.insert("id".into(), json!(id));
 
         state
             .db
@@ -140,9 +145,20 @@ impl PrizeModel {
     }
 }
 
-fn doc_id(row: &Map<String, Value>) -> Option<String> {
-    row.get("__name__")
-        .and_then(|v| v.as_str())
-        .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
-        .or_else(|| row.get("id").and_then(|v| v.as_str()).map(String::from))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Map;
+
+    #[test]
+    fn find_all_rows_get_id_from_firestore_metadata() {
+        let row = Map::from_iter([
+            ("_firestore_id".into(), json!("prize-abc")),
+            ("name".into(), json!("Steam 500ml")),
+            ("order".into(), json!(1)),
+        ]);
+
+        let id = document_id_from_map(&row).expect("id");
+        assert_eq!(id, "prize-abc");
+    }
 }

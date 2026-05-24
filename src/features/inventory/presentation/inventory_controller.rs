@@ -1,6 +1,8 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::CampaignContext;
+use crate::features::inventory::application::InventoryService;
+use crate::features::inventory::domain::InventoryView;
 use crate::features::inventory::infrastructure::{inventory_view_to_json, InventoryRepository};
 use crate::features::locations::infrastructure::LocationRepository;
 use crate::models::prize::PrizeModel;
@@ -41,18 +43,12 @@ pub async fn upsert_inventory(
         return Err(ApiError::bad_request("prizeId is required."));
     }
 
-    if LocationRepository::find_by_id(&state, &ctx.paths, body.location_id.trim())
+    let location = LocationRepository::find_by_id(&state, &ctx.paths, body.location_id.trim())
         .await?
-        .is_none()
-    {
-        return Err(ApiError::bad_request("Location not found."));
-    }
-    if PrizeModel::find_by_id(&state, &ctx.paths, body.prize_id.trim())
+        .ok_or_else(|| ApiError::bad_request("Location not found."))?;
+    let prize = PrizeModel::find_by_id(&state, &ctx.paths, body.prize_id.trim())
         .await?
-        .is_none()
-    {
-        return Err(ApiError::bad_request("Prize not found."));
-    }
+        .ok_or_else(|| ApiError::bad_request("Prize not found."))?;
 
     let slot = InventoryRepository::upsert_slot(
         &state,
@@ -63,11 +59,23 @@ pub async fn upsert_inventory(
     )
     .await?;
 
-    let views = InventoryRepository::build_views(&state, &ctx.paths, &ctx.campaign).await?;
-    let view = views
-        .into_iter()
-        .find(|v| v.location_id == slot.location_id && v.prize_id == slot.prize_id)
-        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Inventory view missing")))?;
+    let now = crate::utils::firestore::millis_now();
+    let releasable = InventoryService::releasable_now(&ctx.campaign, &slot, now);
+    let prize_name = prize
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(body.prize_id.trim())
+        .to_string();
+    let view = InventoryView {
+        location_id: slot.location_id.clone(),
+        location_name: location.name,
+        prize_id: slot.prize_id.clone(),
+        prize_name,
+        total_quantity: slot.total_quantity,
+        awarded_count: slot.awarded_count,
+        releasable_now: releasable,
+        remaining: slot.remaining(releasable),
+    };
 
     Ok(SuccessResponse::data(inventory_view_to_json(&view)))
 }

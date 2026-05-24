@@ -167,9 +167,9 @@ impl InventoryRepository {
         let prize_names: HashMap<String, String> = prizes
             .iter()
             .filter_map(|p| {
-                let id = p.get("id").or_else(|| p.get("__name__")).and_then(|v| v.as_str())?;
+                let id = crate::utils::firestore::document_id_from_map(p)?;
                 let name = p.get("name")?.as_str()?;
-                Some((id.to_string(), name.to_string()))
+                Some((id, name.to_string()))
             })
             .collect();
 
