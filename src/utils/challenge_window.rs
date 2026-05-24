@@ -6,10 +6,11 @@ pub fn assert_challenge_open_for_campaign(campaign: &Campaign) -> ApiResult<()> 
 
     if let Some(start) = campaign.challenge_start_time {
         if now < start {
-            return Err(ApiError::with_code(
+            return Err(ApiError::with_code_data(
                 axum::http::StatusCode::FORBIDDEN,
                 "CHALLENGE_NOT_STARTED",
                 "The challenge has not started yet.",
+                serde_json::json!({ "challengeStartTime": start }),
             ));
         }
     }
@@ -62,8 +63,10 @@ mod tests {
             err,
             ApiError::WithStatus {
                 code: Some(ref code),
+                data: Some(ref data),
                 ..
             } if code == "CHALLENGE_NOT_STARTED"
+                && data.get("challengeStartTime").and_then(|v| v.as_i64()) == Some(start)
         ));
     }
 

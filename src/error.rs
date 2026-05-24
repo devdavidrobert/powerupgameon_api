@@ -13,6 +13,7 @@ pub enum ApiError {
         status: StatusCode,
         message: String,
         code: Option<String>,
+        data: Option<serde_json::Value>,
     },
     #[error("{0}")]
     Internal(#[from] anyhow::Error),
@@ -25,6 +26,8 @@ struct ErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stack: Option<String>,
 }
 
@@ -34,6 +37,7 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
             code: None,
+            data: None,
         }
     }
 
@@ -42,6 +46,21 @@ impl ApiError {
             status,
             message: message.into(),
             code: Some(code.into()),
+            data: None,
+        }
+    }
+
+    pub fn with_code_data(
+        status: StatusCode,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Self::WithStatus {
+            status,
+            message: message.into(),
+            code: Some(code.into()),
+            data: Some(data),
         }
     }
 
@@ -51,16 +70,19 @@ impl ApiError {
                 status: StatusCode::FORBIDDEN,
                 message: "Permission denied.".into(),
                 code: None,
+                data: None,
             }),
             "not-found" => Some(Self::WithStatus {
                 status: StatusCode::NOT_FOUND,
                 message: "Resource not found.".into(),
                 code: None,
+                data: None,
             }),
             "failed-precondition" => Some(Self::WithStatus {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: "A required Firestore composite index is missing. Check server logs for the direct Firebase Console index creation link.".into(),
                 code: Some("FIRESTORE_INDEX_REQUIRED".into()),
+                data: None,
             }),
             _ => None,
         }
@@ -72,12 +94,18 @@ impl IntoResponse for ApiError {
         let is_dev = std::env::var("NODE_ENV").unwrap_or_default() != "production";
 
         match self {
-            ApiError::WithStatus { status, message, code } => (
+            ApiError::WithStatus {
+                status,
+                message,
+                code,
+                data,
+            } => (
                 status,
                 Json(ErrorBody {
                     success: false,
                     message,
                     code,
+                    data,
                     stack: None,
                 }),
             )
@@ -95,6 +123,7 @@ impl IntoResponse for ApiError {
                             "An unexpected error occurred.".into()
                         },
                         code: None,
+                        data: None,
                         stack: is_dev.then(|| format!("{err:?}")),
                     }),
                 )
@@ -152,6 +181,7 @@ pub fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
             success: false,
             message: message.into(),
             code: None,
+            data: None,
             stack: None,
         }),
     )
@@ -169,6 +199,7 @@ pub fn json_error_code(
             success: false,
             message: message.into(),
             code: Some(code.into()),
+            data: None,
             stack: None,
         }),
     )

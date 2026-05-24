@@ -94,6 +94,7 @@ pub async fn create_raffle(
             status: StatusCode::UNPROCESSABLE_ENTITY,
             message: "No submissions match the selected criteria.".into(),
             code: None,
+            data: None,
         });
     }
 
@@ -106,6 +107,7 @@ pub async fn create_raffle(
                 winner_count
             ),
             code: None,
+            data: None,
         });
     }
 

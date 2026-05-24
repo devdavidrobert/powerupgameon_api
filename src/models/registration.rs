@@ -411,6 +411,7 @@ fn map_registration_error(err: FirestoreError) -> ApiError {
             status: axum::http::StatusCode::CONFLICT,
             message: "The name has already been registered.".into(),
             code: Some("NAME_TAKEN".into()),
+            data: None,
         };
     }
     if msg.contains("SESSION_COOLDOWN") {
@@ -418,6 +419,7 @@ fn map_registration_error(err: FirestoreError) -> ApiError {
             status: axum::http::StatusCode::CONFLICT,
             message: "You have already played. Please try again next time!".into(),
             code: Some("SESSION_COOLDOWN".into()),
+            data: None,
         };
     }
     ApiError::Internal(err.into())

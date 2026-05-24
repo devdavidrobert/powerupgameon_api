@@ -243,6 +243,7 @@ fn map_create_error(err: ApiError, ctx: &RequestContext) -> ApiError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: "Game configuration error.".into(),
                 code: None,
+                data: None,
             };
         }
     }

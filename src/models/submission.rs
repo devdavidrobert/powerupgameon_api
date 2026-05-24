@@ -163,6 +163,7 @@ impl SubmissionModel {
                 status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 message: "No questions configured.".into(),
                 code: Some("NO_QUESTIONS".into()),
+                data: None,
             });
         }
 
@@ -179,6 +180,7 @@ impl SubmissionModel {
                 status: axum::http::StatusCode::BAD_REQUEST,
                 message: "answers must match the number of questions.".into(),
                 code: Some("INVALID_ANSWERS_LENGTH".into()),
+                data: None,
             });
         }
 
@@ -196,6 +198,7 @@ impl SubmissionModel {
                     status: axum::http::StatusCode::BAD_REQUEST,
                     message: format!("Invalid answer index for question {i}."),
                     code: Some("INVALID_ANSWER_INDEX".into()),
+                    data: None,
                 });
             }
             if ans == correct {
@@ -417,6 +420,7 @@ fn map_submission_error(err: FirestoreError) -> ApiError {
             status: axum::http::StatusCode::BAD_REQUEST,
             message: "No registration found for this session.".into(),
             code: Some("NO_SESSION".into()),
+            data: None,
         };
     }
     ApiError::Internal(anyhow!(err))
