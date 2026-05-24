@@ -105,18 +105,7 @@ async fn main() -> Result<()> {
     let default_location_id = ensure_default_location(&db, &paths).await?;
 
     let prize_counts = read_prize_counts(&db).await?;
-    let default_limit: i32 = std::env::var("REAL_PRIZE_LIMIT")
-        .unwrap_or_else(|_| "5".into())
-        .parse()
-        .unwrap_or(5);
-    migrate_inventory(
-        &db,
-        &paths,
-        &default_location_id,
-        &prize_counts,
-        default_limit,
-    )
-    .await?;
+    migrate_inventory(&db, &paths, &default_location_id, &prize_counts).await?;
 
     backfill_location_ids(&db, &paths, &default_location_id).await?;
 
@@ -275,7 +264,6 @@ async fn migrate_inventory(
     paths: &CampaignPaths,
     location_id: &str,
     prize_counts: &HashMap<String, i64>,
-    default_limit: i32,
 ) -> Result<()> {
     let parent = paths
         .parent_str(&db.client)
@@ -307,6 +295,7 @@ async fn migrate_inventory(
             continue;
         }
         let awarded = prize_counts.get(prize_name).copied().unwrap_or(0);
+        let total_quantity = awarded.max(1);
         let slot_id = format!("{location_id}_{prize_id}");
         db.client
             .fluent()
@@ -317,7 +306,7 @@ async fn migrate_inventory(
             .object(&json!({
                 "locationId": location_id,
                 "prizeId": prize_id,
-                "totalQuantity": default_limit,
+                "totalQuantity": total_quantity,
                 "awardedCount": awarded,
                 "updatedAt": chrono::Utc::now().timestamp_millis(),
             }))

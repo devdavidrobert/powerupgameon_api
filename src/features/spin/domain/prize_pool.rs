@@ -34,6 +34,24 @@ pub fn is_real_prize(prize: &Map<String, Value>) -> bool {
     !is_consolation_prize(prize)
 }
 
+/// Inventory row exists for this location and prize (including `totalQuantity == 0`).
+pub fn is_prize_allocated_at_location(
+    prize_id: &str,
+    slot_by_prize: &HashMap<String, InventorySlot>,
+) -> bool {
+    slot_by_prize.contains_key(prize_id)
+}
+
+/// Inventory slot has stock configured (`totalQuantity > 0`) — used for award eligibility.
+pub fn is_prize_configured_at_location(
+    prize_id: &str,
+    slot_by_prize: &HashMap<String, InventorySlot>,
+) -> bool {
+    slot_by_prize
+        .get(prize_id)
+        .is_some_and(|slot| slot.total_quantity > 0)
+}
+
 pub fn partition_spin_pool(
     prizes: &[Map<String, Value>],
     slot_by_prize: &HashMap<String, InventorySlot>,
@@ -50,7 +68,9 @@ pub fn partition_spin_pool(
         };
 
         if is_consolation_prize(prize) {
-            consolation.push((prize.clone(), prize_id));
+            if is_prize_configured_at_location(&prize_id, slot_by_prize) {
+                consolation.push((prize.clone(), prize_id));
+            }
             continue;
         }
 
@@ -74,6 +94,8 @@ pub fn partition_spin_pool(
     (real_claimable, consolation)
 }
 
+/// Last-resort spin outcome when the weighted pool is empty. Only consolation prizes
+/// may be awarded here — never a real prize without inventory (see `claim_tx`).
 pub fn pick_wheel_fallback(prizes: &[Map<String, Value>]) -> Option<SpinPoolEntry> {
     for prize in prizes {
         if is_consolation_prize(prize) {
@@ -82,8 +104,60 @@ pub fn pick_wheel_fallback(prizes: &[Map<String, Value>]) -> Option<SpinPoolEntr
             }
         }
     }
+    None
+}
 
-    prizes.iter().rev().filter_map(prize_entry).next()
+/// Prizes shown on the wheel — every campaign prize with an inventory row at this location
+/// (including exhausted or zero-quantity slots). Award eligibility is handled separately
+/// by `partition_spin_pool` and `claim_tx`.
+pub fn wheel_display_prizes(
+    prizes: &[Map<String, Value>],
+    slot_by_prize: &HashMap<String, InventorySlot>,
+    _campaign: &Campaign,
+    _now: i64,
+) -> Vec<Map<String, Value>> {
+    let mut out: Vec<Map<String, Value>> = prizes
+        .iter()
+        .filter(|prize| {
+            prize_id_from_map(prize)
+                .is_some_and(|id| is_prize_allocated_at_location(&id, slot_by_prize))
+        })
+        .cloned()
+        .collect();
+
+    out.sort_by_key(|p| p.get("order").and_then(|v| v.as_i64()).unwrap_or(0));
+    out
+}
+
+/// Public wheel payload — strips Firestore metadata.
+pub fn prize_to_wheel_json(prize: &Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    if let Some(id) = prize_id_from_map(prize) {
+        out.insert("id".into(), Value::String(id));
+    }
+    if let Some(name) = prize.get("name") {
+        out.insert("name".into(), name.clone());
+    }
+    if let Some(order) = prize.get("order") {
+        out.insert("order".into(), order.clone());
+    }
+    if let Some(is_real) = prize.get("isRealPrize") {
+        out.insert("isRealPrize".into(), is_real.clone());
+    } else {
+        out.insert("isRealPrize".into(), Value::Bool(true));
+    }
+    out
+}
+
+pub fn has_consolation_at_location(
+    prizes: &[Map<String, Value>],
+    slot_by_prize: &HashMap<String, InventorySlot>,
+) -> bool {
+    prizes.iter().any(|p| {
+        is_consolation_prize(p)
+            && prize_id_from_map(p)
+                .is_some_and(|id| is_prize_configured_at_location(&id, slot_by_prize))
+    })
 }
 
 pub fn prize_entry(prize: &Map<String, Value>) -> Option<SpinPoolEntry> {

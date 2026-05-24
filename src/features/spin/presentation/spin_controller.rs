@@ -5,8 +5,8 @@ use crate::features::inventory::domain::InventorySlot;
 use crate::features::inventory::infrastructure::InventoryRepository;
 use crate::features::spin::application::{SpinService, MAX_CLAIM_RETRIES};
 use crate::features::spin::domain::{
-    has_consolation_prize, is_real_prize, pick_wheel_fallback, prize_id_from_map, SpinPrize,
-    SpinResult,
+    has_consolation_prize, is_real_prize, pick_wheel_fallback, prize_id_from_map,
+    prize_to_wheel_json, wheel_display_prizes, has_consolation_at_location, SpinPrize, SpinResult,
 };
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
@@ -14,9 +14,12 @@ use crate::models::prize::PrizeModel;
 use crate::models::registration::RegistrationModel;
 use crate::models::submission::SubmissionModel;
 use crate::utils::spin_token::verify_spin_token;
-use axum::{extract::State, Extension, Json};
+use axum::{
+    extract::{Query, State},
+    Extension, Json,
+};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -40,6 +43,98 @@ fn log_spin_slow(state: &AppState, req_ctx: &RequestContext, started: Instant) {
 pub struct SpinBody {
     #[serde(rename = "spinToken")]
     pub spin_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct WheelPrizesQuery {
+    #[serde(rename = "sessionId")]
+    pub session_id: Option<String>,
+    #[serde(rename = "spinToken")]
+    pub spin_token: Option<String>,
+}
+
+fn resolve_wheel_session_id(
+    state: &AppState,
+    query: &WheelPrizesQuery,
+    campaign_id: &str,
+) -> ApiResult<String> {
+    if let Some(token) = query
+        .spin_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let (session_id, token_campaign_id) = verify_spin_token(&state.config, token)?;
+        if token_campaign_id != campaign_id {
+            return Err(ApiError::with_code(
+                axum::http::StatusCode::BAD_REQUEST,
+                "SPIN_TOKEN_INVALID",
+                "Spin token does not match this campaign.",
+            ));
+        }
+        return Ok(session_id);
+    }
+
+    let session_id = query
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApiError::bad_request("spinToken or sessionId is required.")
+        })?;
+
+    Ok(session_id.to_string())
+}
+
+pub async fn get_wheel_prizes(
+    State(state): State<Arc<AppState>>,
+    PublicCampaignContext(ctx): PublicCampaignContext,
+    Query(query): Query<WheelPrizesQuery>,
+) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
+    let session_id = resolve_wheel_session_id(&state, &query, &ctx.campaign.id)?;
+
+    let registration = RegistrationModel::find_by_id(&state, &ctx.paths, &session_id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("Registration not found for this session."))?;
+
+    let location_id = registration
+        .get("locationId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ApiError::bad_request("Registration is missing location context for the prize wheel.")
+        })?;
+
+    let prizes = PrizeModel::find_all(&state, &ctx.paths).await?;
+    if prizes.is_empty() {
+        return Err(ApiError::bad_request("No prizes configured."));
+    }
+
+    let slots = InventoryRepository::find_by_location(&state, &ctx.paths, location_id).await?;
+    let slot_by_prize: HashMap<String, InventorySlot> =
+        slots.into_iter().map(|s| (s.prize_id.clone(), s)).collect();
+    let now = chrono::Utc::now().timestamp_millis();
+
+    if !has_consolation_at_location(&prizes, &slot_by_prize) {
+        return Err(ApiError::with_code(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "NO_CONSOLATION_PRIZES",
+            "No consolation prize is configured for your location. Ask an admin to add inventory for a consolation prize at this venue.",
+        ));
+    }
+
+    let wheel = wheel_display_prizes(&prizes, &slot_by_prize, &ctx.campaign, now);
+    if wheel.is_empty() {
+        return Err(ApiError::with_code(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "SPIN_POOL_EMPTY",
+            "No prizes are configured for your location.",
+        ));
+    }
+
+    let data: Vec<Map<String, Value>> = wheel.iter().map(prize_to_wheel_json).collect();
+
+    Ok(SuccessResponse::data(data))
 }
 
 pub async fn spin_wheel(

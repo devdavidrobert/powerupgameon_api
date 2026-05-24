@@ -1,9 +1,11 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::infrastructure::CampaignPaths;
-use crate::features::inventory::domain::InventorySlot;
+use crate::features::inventory::domain::{merge_inventory_slot_fields, InventorySlot};
 use crate::features::locations::domain::GeoStatus;
 use crate::models::prize::PrizeModel;
+use crate::features::campaigns::infrastructure::CampaignRepository;
+use crate::features::questions::domain::scoring::{compute_quiz_score, qualifies_for_spin};
 use crate::models::question::QuestionModel;
 use crate::models::registration::RegistrationModel;
 use crate::utils::firestore::{
@@ -18,7 +20,7 @@ use firestore::errors::{
 use firestore::FirestoreQueryDirection;
 use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -34,7 +36,7 @@ pub struct SubmissionCreateInput {
     pub session_id: String,
     pub full_name: String,
     pub normalized_name: String,
-    pub answers: Vec<i64>,
+    pub answers: Vec<Value>,
     pub user_agent: String,
     pub ip: String,
     pub location_id: Option<String>,
@@ -48,6 +50,75 @@ pub struct FinalizeSpinResult {
 }
 
 impl SubmissionModel {
+    /// Counts completed spins that awarded this prize at a location (for inventory reconciliation).
+    pub async fn count_wins_for_prize_at_location(
+        state: &AppState,
+        paths: &CampaignPaths,
+        location_id: &str,
+        prize_id: &str,
+        prize_name: &str,
+    ) -> ApiResult<i64> {
+        let mut total = 0i64;
+        let mut cursor = None;
+        loop {
+            let (page, next, has_more) =
+                Self::find_page(state, paths, 200, cursor).await?;
+            for row in &page {
+                if submission_row_matches_prize_win(row, location_id, prize_id, prize_name) {
+                    total += 1;
+                }
+            }
+            if !has_more {
+                break;
+            }
+            cursor = next;
+        }
+        Ok(total)
+    }
+
+    /// Counts completed real-prize wins grouped by `(locationId, prizeId)` for inventory reconciliation.
+    pub async fn aggregate_real_prize_wins(
+        state: &AppState,
+        paths: &CampaignPaths,
+        prize_name_to_id: &HashMap<String, String>,
+    ) -> ApiResult<HashMap<(String, String), i64>> {
+        let mut counts: HashMap<(String, String), i64> = HashMap::new();
+        let mut cursor = None;
+        loop {
+            let (page, next, has_more) = Self::find_page(state, paths, 200, cursor).await?;
+            for row in &page {
+                let Some(location_id) = row.get("locationId").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let prize = row.get("prize").and_then(|v| v.as_str()).unwrap_or("");
+                if prize == "pending" || prize == "Nothing" || prize.is_empty() {
+                    continue;
+                }
+                if row.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false) {
+                    continue;
+                }
+
+                let prize_id = row
+                    .get("prizeId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| prize_name_to_id.get(prize).cloned());
+                let Some(prize_id) = prize_id else {
+                    continue;
+                };
+
+                *counts
+                    .entry((location_id.to_string(), prize_id))
+                    .or_insert(0) += 1;
+            }
+            if !has_more {
+                break;
+            }
+            cursor = next;
+        }
+        Ok(counts)
+    }
+
     pub async fn find_by_id(
         state: &AppState,
         paths: &CampaignPaths,
@@ -339,31 +410,28 @@ impl SubmissionModel {
             });
         }
 
-        let mut score = 0i64;
-        for (i, q) in questions.iter().enumerate() {
-            let ans = input.answers[i];
-            let options_len = q
-                .get("options")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0) as i64;
-            let correct = q.get("correctIndex").and_then(|v| v.as_i64()).unwrap_or(-1);
-            if ans < 0 || ans >= options_len {
-                return Err(ApiError::WithStatus {
-                    status: axum::http::StatusCode::BAD_REQUEST,
-                    message: format!("Invalid answer index for question {i}."),
-                    code: Some("INVALID_ANSWER_INDEX".into()),
-                    data: None,
-                });
+        let quiz_score = compute_quiz_score(&questions, &input.answers).map_err(|message| {
+            ApiError::WithStatus {
+                status: axum::http::StatusCode::BAD_REQUEST,
+                message,
+                code: Some("INVALID_ANSWER".into()),
+                data: None,
             }
-            if ans == correct {
-                score += 1;
-            }
-        }
+        })?;
 
-        let total = questions.len() as i64;
-        let percentage = ((score as f64 / total as f64) * 100.0).round() as i64;
-        let prize = if score == total { "pending" } else { "Nothing" };
+        let campaign = CampaignRepository::find_by_id(state, &paths.campaign_id)
+            .await?
+            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Campaign not found.").into()))?;
+        let spin_pass_percent = campaign.spin_pass_percent();
+
+        let score = quiz_score.score;
+        let total = quiz_score.total;
+        let percentage = quiz_score.percentage;
+        let prize = if qualifies_for_spin(percentage, spin_pass_percent) {
+            "pending"
+        } else {
+            "Nothing"
+        };
         let status = if prize == "pending" {
             "pending"
         } else {
@@ -379,7 +447,9 @@ impl SubmissionModel {
             "normalizedName": input.normalized_name,
             "score": score,
             "total": total,
+            "questionCount": quiz_score.question_count,
             "percentage": percentage,
+            "spinPassPercent": spin_pass_percent,
             "prize": prize,
             "answers": input.answers,
             "userAgent": input.user_agent,
@@ -451,6 +521,25 @@ impl SubmissionModel {
     }
 }
 
+fn submission_row_matches_prize_win(
+    row: &Map<String, Value>,
+    location_id: &str,
+    prize_id: &str,
+    prize_name: &str,
+) -> bool {
+    if row.get("locationId").and_then(|v| v.as_str()) != Some(location_id) {
+        return false;
+    }
+    let prize = row.get("prize").and_then(|v| v.as_str()).unwrap_or("");
+    if prize == "pending" || prize == "Nothing" || prize.is_empty() {
+        return false;
+    }
+    if row.get("prizeId").and_then(|v| v.as_str()) == Some(prize_id) {
+        return true;
+    }
+    prize == prize_name
+}
+
 fn resolve_inventory_decrement(
     sub: &Map<String, Value>,
     prizes: &[Map<String, Value>],
@@ -491,15 +580,14 @@ fn delete_submission_tx<'b>(
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
                 if awarded > 0 {
+                    let now = millis_now();
+                    let payload = merge_inventory_slot_fields(&slot_doc, awarded - 1, now);
                     db.fluent()
                         .update()
                         .in_col(INVENTORY_SUBCOL)
                         .document_id(&slot_id)
                         .parent(parent.as_str())
-                        .object(&json!({
-                            "awardedCount": awarded - 1,
-                            "updatedAt": millis_now(),
-                        }))
+                        .object(&payload)
                         .add_to_transaction(transaction)
                         .map_err(BackoffError::Permanent)?;
                 }

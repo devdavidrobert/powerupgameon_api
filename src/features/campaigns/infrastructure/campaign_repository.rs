@@ -87,6 +87,7 @@ impl CampaignRepository {
             "staggerMode": StaggerMode::Linear.as_str(),
             "staggerSchedule": null,
             "geoEnforcement": GeoEnforcement::Reject.as_str(),
+            "spinPassPercent": 100,
             "createdAt": now,
             "updatedAt": now,
         });
@@ -209,6 +210,11 @@ pub fn map_campaign(doc: Map<String, Value>) -> Option<Campaign> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("reject"),
         ),
+        spin_pass_percent: doc
+            .get("spinPassPercent")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(100)
+            .clamp(0, 100),
         created_at: doc
             .get("createdAt")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
@@ -229,6 +235,7 @@ pub fn campaign_to_json(campaign: &Campaign) -> Value {
         "staggerMode": campaign.stagger_mode.as_str(),
         "staggerSchedule": campaign.stagger_schedule,
         "geoEnforcement": campaign.geo_enforcement.as_str(),
+        "spinPassPercent": campaign.spin_pass_percent,
         "createdAt": campaign.created_at,
         "updatedAt": campaign.updated_at,
     })
@@ -300,6 +307,12 @@ pub fn build_update_payload(body: &CampaignUpdateInput) -> ApiResult<Map<String,
     if let Some(geo) = &body.geo_enforcement {
         payload.insert("geoEnforcement".into(), json!(geo.as_str()));
     }
+    if let Some(spin_pass_percent) = body.spin_pass_percent {
+        payload.insert(
+            "spinPassPercent".into(),
+            json!(spin_pass_percent.clamp(0, 100)),
+        );
+    }
     Ok(payload)
 }
 
@@ -313,6 +326,7 @@ pub struct CampaignUpdateInput {
     pub stagger_schedule: Option<Vec<StaggerStep>>,
     pub clear_stagger_schedule: bool,
     pub geo_enforcement: Option<GeoEnforcement>,
+    pub spin_pass_percent: Option<i64>,
 }
 
 pub fn parse_challenge_time_value(value: &Value) -> ApiResult<Value> {

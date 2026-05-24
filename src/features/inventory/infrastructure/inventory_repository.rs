@@ -3,7 +3,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::domain::Campaign;
 use crate::features::campaigns::infrastructure::CampaignPaths;
 use crate::features::inventory::application::InventoryService;
-use crate::features::inventory::domain::{InventorySlot, InventoryView};
+use crate::features::inventory::domain::{merge_inventory_slot_fields, InventorySlot, InventoryView};
 use crate::features::locations::infrastructure::LocationRepository;
 use crate::models::prize::PrizeModel;
 use crate::models::submission::FinalizeSpinResult;
@@ -104,7 +104,9 @@ impl InventoryRepository {
         paths: &CampaignPaths,
         location_id: &str,
         prize_id: &str,
+        prize_name: &str,
         total_quantity: i64,
+        reconcile_awarded_from_submissions: bool,
     ) -> ApiResult<InventorySlot> {
         if total_quantity < 0 {
             return Err(ApiError::bad_request("totalQuantity must be non-negative."));
@@ -113,7 +115,18 @@ impl InventoryRepository {
         let id = InventorySlot::slot_key(location_id, prize_id);
         let parent = paths.parent_str(&state.db.client)?;
         let existing = Self::find_slot(state, paths, location_id, prize_id).await?;
-        let awarded = existing.as_ref().map(|s| s.awarded_count).unwrap_or(0);
+        let mut awarded = existing.as_ref().map(|s| s.awarded_count).unwrap_or(0);
+        if reconcile_awarded_from_submissions {
+            let from_submissions = crate::models::submission::SubmissionModel::count_wins_for_prize_at_location(
+                state,
+                paths,
+                location_id,
+                prize_id,
+                prize_name,
+            )
+            .await?;
+            awarded = awarded.max(from_submissions);
+        }
         if total_quantity < awarded {
             return Err(ApiError::bad_request(
                 "totalQuantity cannot be less than already awarded count.",
@@ -157,7 +170,7 @@ impl InventoryRepository {
         paths: &CampaignPaths,
         campaign: &Campaign,
     ) -> ApiResult<Vec<InventoryView>> {
-        let slots = Self::find_all(state, paths).await?;
+        let mut slots = Self::find_all(state, paths).await?;
         let locations = LocationRepository::find_all(state, paths).await?;
         let prizes = PrizeModel::find_all(state, paths).await?;
         let now = millis_now();
@@ -174,6 +187,27 @@ impl InventoryRepository {
                 Some((id, name.to_string()))
             })
             .collect();
+        let prize_name_to_id: HashMap<String, String> = prize_names
+            .iter()
+            .map(|(id, name)| (name.clone(), id.clone()))
+            .collect();
+
+        let wins_by_slot = crate::models::submission::SubmissionModel::aggregate_real_prize_wins(
+            state,
+            paths,
+            &prize_name_to_id,
+        )
+        .await?;
+
+        for slot in &mut slots {
+            let key = (slot.location_id.clone(), slot.prize_id.clone());
+            if let Some(from_submissions) = wins_by_slot.get(&key) {
+                if *from_submissions > slot.awarded_count {
+                    Self::sync_awarded_count(state, paths, slot, *from_submissions, now).await?;
+                    slot.awarded_count = *from_submissions;
+                }
+            }
+        }
 
         Ok(slots
             .into_iter()
@@ -198,6 +232,47 @@ impl InventoryRepository {
                 }
             })
             .collect())
+    }
+
+    async fn sync_awarded_count(
+        state: &AppState,
+        paths: &CampaignPaths,
+        slot: &InventorySlot,
+        awarded_count: i64,
+        updated_at: i64,
+    ) -> ApiResult<()> {
+        let id = InventorySlot::slot_key(&slot.location_id, &slot.prize_id);
+        let parent = paths.parent_str(&state.db.client)?;
+        let existing: Option<Map<String, Value>> = state
+            .db
+            .client
+            .fluent()
+            .select()
+            .by_id_in(INVENTORY_SUBCOL)
+            .parent(&parent)
+            .obj()
+            .one(&id)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        let Some(existing) = existing else {
+            return Ok(());
+        };
+
+        let payload = merge_inventory_slot_fields(&existing, awarded_count, updated_at);
+        state
+            .db
+            .client
+            .fluent()
+            .update()
+            .in_col(INVENTORY_SUBCOL)
+            .document_id(&id)
+            .parent(parent)
+            .object(&payload)
+            .execute::<Map<String, Value>>()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+        Ok(())
     }
 
     pub async fn claim_atomic(
@@ -250,15 +325,32 @@ impl InventoryRepository {
         location_id: &str,
         prize_id: &str,
     ) -> ApiResult<()> {
-        let slot = Self::find_slot(state, paths, location_id, prize_id).await?;
-        let Some(slot) = slot else {
-            return Ok(());
-        };
-        if slot.awarded_count <= 0 {
-            return Ok(());
-        }
         let parent = paths.parent_str(&state.db.client)?;
         let id = InventorySlot::slot_key(location_id, prize_id);
+        let existing: Option<Map<String, Value>> = state
+            .db
+            .client
+            .fluent()
+            .select()
+            .by_id_in(INVENTORY_SUBCOL)
+            .parent(&parent)
+            .obj()
+            .one(&id)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+        let Some(existing) = existing else {
+            return Ok(());
+        };
+        let awarded = existing
+            .get("awardedCount")
+            .and_then(i64_from_value)
+            .unwrap_or(0);
+        if awarded <= 0 {
+            return Ok(());
+        }
+        let now = millis_now();
+        let payload = merge_inventory_slot_fields(&existing, awarded - 1, now);
         state
             .db
             .client
@@ -267,10 +359,7 @@ impl InventoryRepository {
             .in_col(INVENTORY_SUBCOL)
             .document_id(&id)
             .parent(parent)
-            .object(&json!({
-                "awardedCount": slot.awarded_count - 1,
-                "updatedAt": millis_now(),
-            }))
+            .object(&payload)
             .execute::<Map<String, Value>>()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
@@ -321,7 +410,18 @@ fn claim_tx<'b>(
             let slot_doc =
                 tx_get_optional(&db, parent.as_str(), INVENTORY_SUBCOL, &slot_id).await?;
 
-            let slot = slot_doc.and_then(map_slot).ok_or_else(|| {
+            let Some(slot_doc) = slot_doc else {
+                return Err(BackoffError::Permanent(
+                    FirestoreError::InvalidParametersError(FirestoreInvalidParametersError::new(
+                        FirestoreInvalidParametersPublicDetails::new(
+                            "INVENTORY_EXHAUSTED".to_string(),
+                            "code".to_string(),
+                        ),
+                    )),
+                ));
+            };
+
+            let slot = map_slot(slot_doc.clone()).ok_or_else(|| {
                 BackoffError::Permanent(FirestoreError::InvalidParametersError(
                     FirestoreInvalidParametersError::new(
                         FirestoreInvalidParametersPublicDetails::new(
@@ -344,15 +444,14 @@ fn claim_tx<'b>(
                 ));
             }
 
+            let inventory_update =
+                merge_inventory_slot_fields(&slot_doc, slot.awarded_count + 1, now);
             db.fluent()
                 .update()
                 .in_col(INVENTORY_SUBCOL)
                 .document_id(&slot_id)
                 .parent(parent.as_str())
-                .object(&json!({
-                    "awardedCount": slot.awarded_count + 1,
-                    "updatedAt": now,
-                }))
+                .object(&inventory_update)
                 .add_to_transaction(transaction)
                 .map_err(BackoffError::Permanent)?;
         }
@@ -383,7 +482,8 @@ fn claim_tx<'b>(
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
 
-        let submission_update = merge_submission_spin_fields(&sub, &prize_name, now);
+        let submission_update =
+            merge_submission_spin_fields(&sub, &prize_id, &prize_name, is_real_prize, now);
         db.fluent()
             .update()
             .in_col(SUBMISSIONS_SUBCOL)
@@ -416,7 +516,9 @@ fn claim_tx<'b>(
 /// so quiz scores, names, and `submittedAt` survive spin finalization (admin list depends on them).
 fn merge_submission_spin_fields(
     existing: &Map<String, Value>,
+    prize_id: &str,
     prize_name: &str,
+    is_real_prize: bool,
     finalized_at: i64,
 ) -> Map<String, Value> {
     let mut merged: Map<String, Value> = existing
@@ -425,6 +527,8 @@ fn merge_submission_spin_fields(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     merged.insert("prize".into(), json!(prize_name));
+    merged.insert("prizeId".into(), json!(prize_id));
+    merged.insert("isRealPrize".into(), json!(is_real_prize));
     merged.insert("status".into(), json!("completed"));
     merged.insert("finalizedAt".into(), json!(finalized_at));
     merged
@@ -494,6 +598,55 @@ pub fn inventory_view_to_json(view: &InventoryView) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_submission_spin_fields_persists_prize_metadata() {
+        let existing = Map::from_iter([
+            ("sessionId".into(), json!("sess1")),
+            ("prize".into(), json!("pending")),
+            ("score".into(), json!(8)),
+        ]);
+        let merged = merge_submission_spin_fields(
+            &existing,
+            "prize-uuid",
+            "Sticker Pack",
+            false,
+            1_700_000_000_000_i64,
+        );
+        assert_eq!(
+            merged.get("prize").and_then(|v| v.as_str()),
+            Some("Sticker Pack")
+        );
+        assert_eq!(
+            merged.get("prizeId").and_then(|v| v.as_str()),
+            Some("prize-uuid")
+        );
+        assert_eq!(merged.get("isRealPrize").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(merged.get("score").and_then(|v| v.as_i64()), Some(8));
+    }
+
+    #[test]
+    fn merge_inventory_slot_fields_preserves_slot_metadata() {
+        let existing = Map::from_iter([
+            ("locationId".into(), json!("loc1")),
+            ("prizeId".into(), json!("prize1")),
+            ("totalQuantity".into(), json!(10)),
+            ("awardedCount".into(), json!(2)),
+        ]);
+        let merged = merge_inventory_slot_fields(&existing, 3, 1_700_000_000_000_i64);
+        assert_eq!(
+            merged.get("locationId").and_then(|v| v.as_str()),
+            Some("loc1")
+        );
+        assert_eq!(
+            merged.get("totalQuantity").and_then(|v| v.as_i64()),
+            Some(10)
+        );
+        assert_eq!(
+            merged.get("awardedCount").and_then(|v| v.as_i64()),
+            Some(3)
+        );
+    }
 
     #[test]
     fn map_slot_reads_integer_quantities() {

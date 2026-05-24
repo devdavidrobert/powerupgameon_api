@@ -28,6 +28,7 @@ fn sample_campaign(start: i64, end: i64) -> Campaign {
         stagger_mode: StaggerMode::Immediate,
         stagger_schedule: None,
         geo_enforcement: GeoEnforcement::Reject,
+        spin_pass_percent: 100,
         created_at: None,
         updated_at: None,
     }
@@ -59,7 +60,10 @@ fn partition_includes_consolation_when_real_inventory_is_exhausted() {
         prize("Steam Can", "p1", 1, true),
         prize("So Close", "p2", 2, false),
     ];
-    let slots = HashMap::from([("p1".into(), slot("loc-a", "p1", 1, 1))]);
+    let slots = HashMap::from([
+        ("p1".into(), slot("loc-a", "p1", 1, 1)),
+        ("p2".into(), slot("loc-a", "p2", 1, 0)),
+    ]);
     let excluded = HashSet::new();
     let campaign = sample_campaign(0, 1000);
 
@@ -79,7 +83,10 @@ fn partition_separates_claimable_real_and_consolation() {
         prize("Steam Can", "p1", 1, true),
         prize("So Close", "p2", 2, false),
     ];
-    let slots = HashMap::from([("p1".into(), slot("loc-a", "p1", 5, 0))]);
+    let slots = HashMap::from([
+        ("p1".into(), slot("loc-a", "p1", 5, 0)),
+        ("p2".into(), slot("loc-a", "p2", 1, 0)),
+    ]);
     let excluded = HashSet::new();
     let campaign = sample_campaign(0, 1000);
 
@@ -125,13 +132,100 @@ fn consolation_requires_explicit_flag() {
 }
 
 #[test]
-fn pick_wheel_fallback_uses_last_prize_when_no_consolation() {
+fn pick_wheel_fallback_never_awards_real_prize_without_consolation() {
     let prizes = vec![
         prize("Steam Can", "p1", 1, true),
         prize("Merch", "p2", 2, true),
     ];
-    let picked = pick_wheel_fallback(&prizes).expect("fallback");
-    assert_eq!(picked.0.get("name").and_then(|v| v.as_str()), Some("Merch"));
+    assert!(pick_wheel_fallback(&prizes).is_none());
+}
+
+#[test]
+fn wheel_display_prizes_excludes_real_without_inventory_slot() {
+    use powerupgameon_api::features::spin::domain::wheel_display_prizes;
+
+    let prizes = vec![
+        prize("Steam Can", "p1", 1, true),
+        prize("test_prize", "p3", 2, true),
+        prize("So Close", "p2", 3, false),
+    ];
+    let slots = HashMap::from([("p1".into(), slot("loc-a", "p1", 5, 0))]);
+    let campaign = sample_campaign(0, 1000);
+
+    let wheel = wheel_display_prizes(&prizes, &slots, &campaign, 500);
+    let names: Vec<&str> = wheel
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(names, vec!["Steam Can"]);
+}
+
+#[test]
+fn wheel_display_includes_configured_consolation_at_location() {
+    use powerupgameon_api::features::spin::domain::wheel_display_prizes;
+
+    let prizes = vec![
+        prize("Steam Can", "p1", 1, true),
+        prize("So Close", "p2", 3, false),
+    ];
+    let slots = HashMap::from([
+        ("p1".into(), slot("loc-a", "p1", 5, 0)),
+        ("p2".into(), slot("loc-a", "p2", 1, 0)),
+    ]);
+    let campaign = sample_campaign(0, 1000);
+
+    let wheel = wheel_display_prizes(&prizes, &slots, &campaign, 500);
+    let names: Vec<&str> = wheel
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(names, vec!["Steam Can", "So Close"]);
+}
+
+#[test]
+fn wheel_display_includes_zero_quantity_allocated_slots() {
+    use powerupgameon_api::features::spin::domain::wheel_display_prizes;
+
+    let prizes = vec![
+        prize("Steam Can", "p1", 1, true),
+        prize("Sold Out", "p2", 2, true),
+        prize("So Close", "p3", 3, false),
+    ];
+    let slots = HashMap::from([
+        ("p1".into(), slot("loc-a", "p1", 5, 0)),
+        ("p2".into(), slot("loc-a", "p2", 0, 0)),
+        ("p3".into(), slot("loc-a", "p3", 1, 0)),
+    ]);
+    let campaign = sample_campaign(0, 1000);
+
+    let wheel = wheel_display_prizes(&prizes, &slots, &campaign, 500);
+    let names: Vec<&str> = wheel
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(names, vec!["Steam Can", "Sold Out", "So Close"]);
+}
+
+#[test]
+fn wheel_display_includes_exhausted_real_prize() {
+    use powerupgameon_api::features::spin::domain::wheel_display_prizes;
+
+    let prizes = vec![
+        prize("Steam Can", "p1", 1, true),
+        prize("So Close", "p2", 2, false),
+    ];
+    let slots = HashMap::from([
+        ("p1".into(), slot("loc-a", "p1", 5, 5)),
+        ("p2".into(), slot("loc-a", "p2", 1, 0)),
+    ]);
+    let campaign = sample_campaign(0, 1000);
+
+    let wheel = wheel_display_prizes(&prizes, &slots, &campaign, 500);
+    let names: Vec<&str> = wheel
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(names, vec!["Steam Can", "So Close"]);
 }
 
 #[test]
@@ -257,7 +351,10 @@ fn build_location_pool_snapshot_uses_only_passed_slots() {
         prize("Steam Can", "p1", 1, true),
         prize("So Close", "p2", 2, false),
     ];
-    let slot_map = HashMap::from([("p1".into(), slot("loc-a", "p1", 3, 0))]);
+    let slot_map = HashMap::from([
+        ("p1".into(), slot("loc-a", "p1", 3, 0)),
+        ("p2".into(), slot("loc-a", "p2", 1, 0)),
+    ]);
     let excluded = HashSet::new();
 
     let snapshot =

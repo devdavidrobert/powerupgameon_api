@@ -47,6 +47,7 @@ mod tests {
             stagger_mode: StaggerMode::Linear,
             stagger_schedule: None,
             geo_enforcement: GeoEnforcement::Reject,
+            spin_pass_percent: 100,
             created_at: None,
             updated_at: None,
         }

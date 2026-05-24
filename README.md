@@ -103,7 +103,7 @@ All game data is scoped under a campaign, resolved by URL slug:
 cargo run --bin migrate-to-campaigns -- --slug default --name "Legacy Campaign"
 ```
 
-This creates a campaign, copies root collections into `campaigns/{id}/*` subcollections, adds a default geofence location, and seeds per-location inventory from `REAL_PRIZE_LIMIT` (migration CLI only) / `system/aggregates`.
+This creates a campaign, copies root collections into `campaigns/{id}/*` subcollections, adds a default geofence location, and seeds per-location inventory from `system/aggregates` (`totalQuantity` is at least the historical award count; configure caps in **Admin → Inventory**).
 
 ---
 
@@ -172,7 +172,6 @@ In the Vercel project → **Settings → Environment Variables**, add the same v
 | `TRUST_PROXY` | `1` |
 | `REDIS_URL` | `redis://host:port` (scheme required) |
 | `ALLOWED_ADMIN_EMAILS` | Comma-separated admin emails |
-| `REAL_PRIZE_LIMIT` | Migration CLI only (`migrate-to-campaigns`), default `5` |
 | `SPIN_TOKEN_TTL_MINUTES` | Spin token lifetime in minutes, default `60` |
 | `IP_GEO_ENABLED` | `true`/`1` to cross-check GPS vs IP on registration (recommended in production) |
 | `IP_GEO_MAX_DISTANCE_KM` | Max km between GPS and IP coords when both resolve; default `150` |

@@ -9,7 +9,7 @@ use crate::features::inventory::presentation::{list_inventory, upsert_inventory}
 use crate::features::locations::presentation::{
     create_location, delete_location, list_locations, update_location,
 };
-use crate::features::spin::presentation::spin_wheel;
+use crate::features::spin::presentation::{get_wheel_prizes, spin_wheel};
 use crate::middleware::auth::{authenticate_middleware, require_admin_middleware};
 use crate::middleware::campaign_context::inject_campaign_context;
 use crate::middleware::challenge_window::require_challenge_open_middleware;
@@ -141,13 +141,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             ),
     ));
 
-    let api_spin = with_challenge_open(Router::new().route(
-        "/",
-        post(spin_wheel).layer(middleware::from_fn_with_state(
-            state.clone(),
-            spin_rate_limit_middleware,
-        )),
-    ));
+    let api_spin = with_challenge_open(
+        Router::new()
+            .route("/wheel-prizes", get(get_wheel_prizes))
+            .route(
+                "/",
+                post(spin_wheel).layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    spin_rate_limit_middleware,
+                )),
+            ),
+    );
 
     let api_settings = Router::new()
         .route("/", get(get_campaign_settings))

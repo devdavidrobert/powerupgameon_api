@@ -4,7 +4,10 @@ use crate::features::campaigns::presentation::{
     CampaignContext, PublicCampaignContext, SlugIdPath,
 };
 use crate::features::locations::domain::GeoStatus;
+use crate::features::locations::infrastructure::LocationRepository;
+use crate::features::spin::domain::{is_consolation_prize, prize_id_from_map};
 use crate::middleware::request_context::RequestContext;
+use crate::models::prize::PrizeModel;
 use crate::models::registration::RegistrationModel;
 use crate::models::submission::{SubmissionCreateInput, SubmissionModel};
 use crate::utils::client_ip::{get_client_ip, ClientPeer};
@@ -18,6 +21,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Deserialize)]
@@ -54,6 +58,14 @@ pub async fn get_all_submissions(
     let (items, next_cursor, has_more) =
         SubmissionModel::find_page(&state, &ctx.paths, limit, cursor).await?;
 
+    let locations = LocationRepository::find_all(&state, &ctx.paths).await?;
+    let location_names: HashMap<String, String> = locations
+        .iter()
+        .map(|l| (l.id.clone(), l.name.clone()))
+        .collect();
+    let prizes = PrizeModel::find_all(&state, &ctx.paths).await?;
+    let prize_catalog = build_prize_catalog(&prizes);
+
     let mut data: Vec<Map<String, Value>> = Vec::with_capacity(items.len());
     for row in items {
         let id = row
@@ -87,6 +99,7 @@ pub async fn get_all_submissions(
                     }
                     let mut out = serialize_doc_data(&enriched);
                     out.insert("id".into(), json!(submission_id));
+                    enrich_submission_admin_fields(&mut out, &location_names, &prize_catalog);
                     data.push(out);
                     continue;
                 }
@@ -98,6 +111,7 @@ pub async fn get_all_submissions(
             .unwrap_or(Value::Null);
         let mut out = serialize_doc_data(&row);
         out.insert("id".into(), id_value);
+        enrich_submission_admin_fields(&mut out, &location_names, &prize_catalog);
         data.push(out);
     }
 
@@ -139,20 +153,13 @@ pub async fn create_submission(
         .ok_or_else(|| ApiError::bad_request("sessionId is required."))?;
     let answers_raw = body
         .answers
-        .ok_or_else(|| ApiError::bad_request("answers must be an array of option indices."))?;
+        .ok_or_else(|| ApiError::bad_request("answers must be an array."))?;
 
-    let mut sanitized = Vec::new();
-    for raw in answers_raw {
-        let n = match raw {
-            Value::Number(num) => num.as_i64(),
-            Value::String(s) => s.parse().ok(),
-            _ => None,
-        };
-        let Some(n) = n else {
-            return Err(ApiError::bad_request("One or more answers are invalid."));
-        };
-        sanitized.push(n);
+    if answers_raw.is_empty() {
+        return Err(ApiError::bad_request("answers cannot be empty."));
     }
+
+    let sanitized: Vec<Value> = answers_raw;
 
     let registration = RegistrationModel::find_by_id(&state, &ctx.paths, session_id)
         .await?
@@ -276,6 +283,98 @@ pub async fn delete_submission(
     ))
 }
 
+#[derive(Clone)]
+struct PrizeCatalogEntry {
+    id: String,
+    name: String,
+    is_real_prize: bool,
+}
+
+struct PrizeCatalog {
+    by_id: HashMap<String, PrizeCatalogEntry>,
+    by_name: HashMap<String, PrizeCatalogEntry>,
+}
+
+fn build_prize_catalog(prizes: &[Map<String, Value>]) -> PrizeCatalog {
+    let mut by_id = HashMap::new();
+    let mut by_name = HashMap::new();
+    for prize in prizes {
+        let Some(id) = prize_id_from_map(prize) else {
+            continue;
+        };
+        let name = prize
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let entry = PrizeCatalogEntry {
+            id: id.clone(),
+            name: name.clone(),
+            is_real_prize: !is_consolation_prize(prize),
+        };
+        by_id.insert(id, entry.clone());
+        by_name.insert(name, entry);
+    }
+    PrizeCatalog { by_id, by_name }
+}
+
+fn enrich_submission_admin_fields(
+    out: &mut Map<String, Value>,
+    location_names: &HashMap<String, String>,
+    catalog: &PrizeCatalog,
+) {
+    if let Some(location_id) = out.get("locationId").and_then(|v| v.as_str()) {
+        if let Some(name) = location_names.get(location_id) {
+            out.insert("locationName".into(), json!(name));
+        }
+    }
+
+    let stored_prize = out
+        .get("prize")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let stored_prize_id = out
+        .get("prizeId")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let entry = stored_prize_id
+        .as_ref()
+        .and_then(|id| catalog.by_id.get(id))
+        .or_else(|| {
+            if stored_prize.is_empty() {
+                None
+            } else {
+                catalog.by_name.get(&stored_prize)
+            }
+        });
+
+    let Some(entry) = entry else {
+        if out.get("isRealPrize").is_none()
+            && !stored_prize.is_empty()
+            && stored_prize != "pending"
+            && stored_prize != "Nothing"
+        {
+            out.insert("isRealPrize".into(), json!(true));
+        }
+        return;
+    };
+
+    if stored_prize.is_empty() || stored_prize == "pending" {
+        out.insert("prize".into(), json!(&entry.name));
+    }
+    if stored_prize_id.is_none() {
+        out.insert("prizeId".into(), json!(&entry.id));
+    }
+    if out.get("isRealPrize").is_none() {
+        out.insert("isRealPrize".into(), json!(entry.is_real_prize));
+    }
+}
+
 fn map_create_error(err: ApiError, ctx: &RequestContext) -> ApiError {
     if let ApiError::WithStatus {
         code: Some(code),
@@ -285,7 +384,7 @@ fn map_create_error(err: ApiError, ctx: &RequestContext) -> ApiError {
     {
         if matches!(
             code.as_str(),
-            "NO_SESSION" | "INVALID_ANSWERS_LENGTH" | "INVALID_ANSWER_INDEX"
+            "NO_SESSION" | "INVALID_ANSWERS_LENGTH" | "INVALID_ANSWER_INDEX" | "INVALID_ANSWER"
         ) {
             tracing::warn!(
                 request_id = %ctx.request_id,

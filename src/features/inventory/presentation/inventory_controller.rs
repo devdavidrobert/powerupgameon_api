@@ -5,6 +5,7 @@ use crate::features::inventory::application::InventoryService;
 use crate::features::inventory::domain::InventoryView;
 use crate::features::inventory::infrastructure::{inventory_view_to_json, InventoryRepository};
 use crate::features::locations::infrastructure::LocationRepository;
+use crate::features::spin::domain::is_consolation_prize;
 use crate::models::prize::PrizeModel;
 use axum::{extract::State, Json};
 use serde::Deserialize;
@@ -50,22 +51,26 @@ pub async fn upsert_inventory(
         .await?
         .ok_or_else(|| ApiError::bad_request("Prize not found."))?;
 
-    let slot = InventoryRepository::upsert_slot(
-        &state,
-        &ctx.paths,
-        body.location_id.trim(),
-        body.prize_id.trim(),
-        body.total_quantity,
-    )
-    .await?;
-
-    let now = crate::utils::firestore::millis_now();
-    let releasable = InventoryService::releasable_now(&ctx.campaign, &slot, now);
     let prize_name = prize
         .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or(body.prize_id.trim())
         .to_string();
+    let reconcile = !is_consolation_prize(&prize);
+
+    let slot = InventoryRepository::upsert_slot(
+        &state,
+        &ctx.paths,
+        body.location_id.trim(),
+        body.prize_id.trim(),
+        &prize_name,
+        body.total_quantity,
+        reconcile,
+    )
+    .await?;
+
+    let now = crate::utils::firestore::millis_now();
+    let releasable = InventoryService::releasable_now(&ctx.campaign, &slot, now);
     let view = InventoryView {
         location_id: slot.location_id.clone(),
         location_name: location.name,

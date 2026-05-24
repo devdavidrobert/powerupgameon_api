@@ -99,6 +99,9 @@ pub struct Campaign {
     pub stagger_schedule: Option<Vec<StaggerStep>>,
     #[serde(rename = "geoEnforcement")]
     pub geo_enforcement: GeoEnforcement,
+    /// Minimum % of gradable questions answered correctly to earn a wheel spin (0–100).
+    #[serde(rename = "spinPassPercent")]
+    pub spin_pass_percent: i64,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
@@ -108,5 +111,9 @@ pub struct Campaign {
 impl Campaign {
     pub fn is_publicly_accessible(&self) -> bool {
         self.status == CampaignStatus::Active
+    }
+
+    pub fn spin_pass_percent(&self) -> i64 {
+        self.spin_pass_percent.clamp(0, 100)
     }
 }

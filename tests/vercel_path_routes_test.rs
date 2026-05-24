@@ -18,6 +18,7 @@ fn vercel_routes() -> Router {
         .route("/prizes", get(|| async { "prizes" }))
         .route("/registrations", post(|| async { "registrations" }))
         .route("/submissions", post(|| async { "submissions" }))
+        .route("/spin/wheel-prizes", get(|| async { "wheel-prizes" }))
         .route("/spin", post(|| async { "spin" }))
         .route("/locations", get(|| async { "locations" }))
         .route("/inventory", get(|| async { "inventory" }))
@@ -109,6 +110,12 @@ async fn vercel_restore_reaches_all_route_groups() {
     assert_vercel_route(app.clone(), "POST", "api/campaigns/test3/registrations").await;
     assert_vercel_route(app.clone(), "POST", "api/campaigns/test3/submissions").await;
     assert_vercel_route(app.clone(), "POST", "api/campaigns/test3/spin").await;
+    assert_vercel_route(
+        app.clone(),
+        "GET",
+        "api/campaigns/test3/spin/wheel-prizes",
+    )
+    .await;
     assert_vercel_route(app.clone(), "GET", "api/campaigns/test3/locations").await;
     assert_vercel_route(app.clone(), "GET", "api/campaigns/test3/inventory").await;
     assert_vercel_route(app.clone(), "GET", "api/campaigns/test3/raffles").await;

@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::infrastructure::CampaignPaths;
-use crate::utils::firestore::millis_now;
+use crate::utils::firestore::{document_id_from_map, millis_now};
 use dashmap::DashMap;
 use firestore::FirestoreQueryDirection;
 use once_cell::sync::Lazy;
@@ -48,11 +48,7 @@ impl QuestionModel {
         let rows: Vec<Map<String, Value>> = rows
             .into_iter()
             .map(|mut row| {
-                if let Some(id) = row
-                    .get("__name__")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
-                {
+                if let Some(id) = document_id_from_map(&row) {
                     row.insert("id".into(), json!(id));
                 }
                 row

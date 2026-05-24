@@ -37,6 +37,7 @@ fn campaign_context(status: CampaignStatus) -> CampaignContext {
                 release_percent: 0.5,
             }]),
             geo_enforcement: GeoEnforcement::Flag,
+            spin_pass_percent: 100,
             created_at: None,
             updated_at: Some(1_700_000_000_001_i64),
         },

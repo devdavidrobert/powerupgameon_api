@@ -3,6 +3,10 @@ use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::{
     CampaignContext, PublicCampaignContext, SlugIdPath,
 };
+use crate::features::questions::domain::question_type::QuestionType;
+use crate::features::questions::domain::validation::{
+    build_question_document, merge_question_updates,
+};
 use crate::models::question::QuestionModel;
 use axum::{
     extract::{Path, State},
@@ -10,11 +14,15 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::sync::Arc;
 
+const ADMIN_ONLY_FIELDS: &[&str] = &["correctIndex", "correctAnswer", "correctRating"];
+
 fn to_public(mut doc: Map<String, Value>) -> Map<String, Value> {
-    doc.remove("correctIndex");
+    for key in ADMIN_ONLY_FIELDS {
+        doc.remove(*key);
+    }
     doc
 }
 
@@ -66,9 +74,18 @@ pub async fn get_question(
 #[derive(Deserialize)]
 pub struct QuestionBody {
     pub text: Option<String>,
+    #[serde(rename = "type")]
+    pub question_type: Option<String>,
     pub options: Option<Vec<String>>,
     #[serde(rename = "correctIndex")]
     pub correct_index: Option<i64>,
+    #[serde(rename = "inputRules")]
+    pub input_rules: Option<Value>,
+    #[serde(rename = "correctAnswer")]
+    pub correct_answer: Option<String>,
+    pub rating: Option<Value>,
+    #[serde(rename = "correctRating")]
+    pub correct_rating: Option<i64>,
     pub order: Option<i64>,
 }
 
@@ -81,31 +98,26 @@ pub async fn create_question(
     Json<SuccessResponse<Map<String, Value>>>,
 )> {
     let text = body.text.as_deref().unwrap_or("").trim();
-    let options = body.options.clone().unwrap_or_default();
-    if text.is_empty() || options.len() < 2 {
-        return Err(ApiError::bad_request(
-            "text and at least 2 options are required.",
-        ));
+    if text.is_empty() {
+        return Err(ApiError::bad_request("text is required."));
     }
-    let correct_index = body.correct_index.unwrap_or(-1);
-    if correct_index < 0 || correct_index as usize >= options.len() {
-        return Err(ApiError::bad_request(
-            "correctIndex must be a valid index within options array.",
-        ));
-    }
+
+    let question_type = QuestionType::parse(body.question_type.as_deref());
     let all = QuestionModel::find_all(&state, &ctx.paths).await?;
     let order = body.order.unwrap_or(all.len() as i64 + 1);
-    let mut data = Map::new();
-    data.insert("text".into(), json!(text));
-    data.insert(
-        "options".into(),
-        json!(options
-            .into_iter()
-            .map(|o| o.trim().to_string())
-            .collect::<Vec<_>>()),
-    );
-    data.insert("correctIndex".into(), json!(correct_index));
-    data.insert("order".into(), json!(order));
+
+    let data = build_question_document(
+        text,
+        question_type,
+        body.options,
+        body.correct_index,
+        body.input_rules,
+        body.correct_answer,
+        body.rating,
+        body.correct_rating,
+        order,
+    )?;
+
     let question = QuestionModel::create(&state, &ctx.paths, data).await?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -119,32 +131,26 @@ pub async fn update_question(
     Path(path): Path<SlugIdPath>,
     Json(body): Json<QuestionBody>,
 ) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
-    if QuestionModel::find_by_id(&state, &ctx.paths, &path.id)
+    let existing = QuestionModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
-        .is_none()
-    {
-        return Err(ApiError::bad_request("Question not found."));
-    }
-    let mut updates = Map::new();
-    if let Some(text) = body.text {
-        updates.insert("text".into(), json!(text.trim()));
-    }
-    if let Some(options) = body.options {
-        updates.insert(
-            "options".into(),
-            json!(options
-                .into_iter()
-                .map(|o| o.trim().to_string())
-                .collect::<Vec<_>>()),
-        );
-    }
-    if let Some(correct_index) = body.correct_index {
-        updates.insert("correctIndex".into(), json!(correct_index));
-    }
-    if let Some(order) = body.order {
-        updates.insert("order".into(), json!(order));
-    }
-    let updated = QuestionModel::update(&state, &ctx.paths, &path.id, updates).await?;
+        .ok_or_else(|| ApiError::bad_request("Question not found."))?;
+
+    let merged = merge_question_updates(
+        &existing,
+        body.text,
+        body.question_type
+            .as_deref()
+            .map(|t| QuestionType::parse(Some(t))),
+        body.options,
+        body.correct_index,
+        body.input_rules,
+        body.correct_answer,
+        body.rating,
+        body.correct_rating,
+        body.order,
+    )?;
+
+    let updated = QuestionModel::update(&state, &ctx.paths, &path.id, merged).await?;
     Ok(SuccessResponse::data(updated))
 }
 
@@ -166,20 +172,38 @@ pub async fn delete_question(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn question_body_deserializes_camel_case_correct_index() {
+    fn question_body_deserializes_extended_fields() {
         let body: QuestionBody = serde_json::from_value(json!({
-            "text": "test3",
-            "options": ["aasa", "asdasd", "asdasdfss", "asdasd"],
-            "correctIndex": 0,
+            "text": "Rate us",
+            "type": "rating",
+            "rating": { "min": 1, "max": 5 },
+            "correctRating": 5,
             "order": 1
         }))
         .expect("deserialize");
 
-        assert_eq!(body.text.as_deref(), Some("test3"));
-        assert_eq!(body.options.as_ref().map(|o| o.len()), Some(4));
-        assert_eq!(body.correct_index, Some(0));
-        assert_eq!(body.order, Some(1));
+        assert_eq!(body.text.as_deref(), Some("Rate us"));
+        assert_eq!(body.question_type.as_deref(), Some("rating"));
+        assert_eq!(body.correct_rating, Some(5));
+    }
+
+    #[test]
+    fn to_public_strips_all_admin_fields() {
+        let public = to_public(json!({
+            "text": "Q",
+            "correctIndex": 0,
+            "correctAnswer": "secret",
+            "correctRating": 5
+        })
+        .as_object()
+        .unwrap()
+        .clone());
+
+        assert!(public.get("correctIndex").is_none());
+        assert!(public.get("correctAnswer").is_none());
+        assert!(public.get("correctRating").is_none());
     }
 }

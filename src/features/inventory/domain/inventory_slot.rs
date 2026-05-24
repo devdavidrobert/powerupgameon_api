@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InventorySlot {
@@ -13,6 +14,23 @@ pub struct InventorySlot {
     pub awarded_count: i64,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<i64>,
+}
+
+/// Firestore `.update().object()` replaces the whole document in our client — merge fields
+/// so `locationId`, `prizeId`, and `totalQuantity` survive awarded-count updates.
+pub fn merge_inventory_slot_fields(
+    existing: &Map<String, Value>,
+    awarded_count: i64,
+    updated_at: i64,
+) -> Map<String, Value> {
+    let mut merged: Map<String, Value> = existing
+        .iter()
+        .filter(|(k, _)| !k.starts_with("_firestore"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    merged.insert("awardedCount".into(), json!(awarded_count));
+    merged.insert("updatedAt".into(), json!(updated_at));
+    merged
 }
 
 impl InventorySlot {
@@ -40,4 +58,22 @@ pub struct InventoryView {
     pub awarded_count: i64,
     pub releasable_now: i64,
     pub remaining: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_inventory_slot_fields_preserves_metadata() {
+        let existing = Map::from_iter([
+            ("locationId".into(), json!("loc1")),
+            ("prizeId".into(), json!("prize1")),
+            ("totalQuantity".into(), json!(5)),
+            ("awardedCount".into(), json!(1)),
+        ]);
+        let merged = merge_inventory_slot_fields(&existing, 2, 99);
+        assert_eq!(merged.get("totalQuantity").and_then(|v| v.as_i64()), Some(5));
+        assert_eq!(merged.get("awardedCount").and_then(|v| v.as_i64()), Some(2));
+    }
 }

@@ -38,6 +38,8 @@ pub struct UpdateCampaignBody {
     pub stagger_schedule: Option<Value>,
     #[serde(rename = "geoEnforcement")]
     pub geo_enforcement: Option<String>,
+    #[serde(rename = "spinPassPercent")]
+    pub spin_pass_percent: Option<i64>,
 }
 
 fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) -> ApiResult<()> {
@@ -67,6 +69,14 @@ fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) 
     }
     if let Some(geo) = body.geo_enforcement {
         input.geo_enforcement = Some(GeoEnforcement::from_str(&geo));
+    }
+    if let Some(spin_pass_percent) = body.spin_pass_percent {
+        if !(0..=100).contains(&spin_pass_percent) {
+            return Err(ApiError::bad_request(
+                "spinPassPercent must be between 0 and 100.",
+            ));
+        }
+        input.spin_pass_percent = Some(spin_pass_percent);
     }
     Ok(())
 }
@@ -146,6 +156,7 @@ pub async fn get_campaign_settings(
         SuccessResponse::data(json!({
             "challengeStartTime": ctx.campaign.challenge_start_time,
             "challengeEndTime": ctx.campaign.challenge_end_time,
+            "spinPassPercent": ctx.campaign.spin_pass_percent(),
             "updatedAt": ctx.campaign.updated_at,
         })),
     ))
@@ -161,6 +172,7 @@ pub async fn get_campaign_settings_admin(
         "staggerMode": ctx.campaign.stagger_mode.as_str(),
         "staggerSchedule": ctx.campaign.stagger_schedule,
         "geoEnforcement": ctx.campaign.geo_enforcement.as_str(),
+        "spinPassPercent": ctx.campaign.spin_pass_percent(),
     })))
 }
 
@@ -183,6 +195,7 @@ pub async fn update_campaign_settings(
         "staggerMode": updated.stagger_mode.as_str(),
         "staggerSchedule": updated.stagger_schedule,
         "geoEnforcement": updated.geo_enforcement.as_str(),
+        "spinPassPercent": updated.spin_pass_percent(),
     })))
 }
 
