@@ -194,11 +194,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/settings", api_settings)
         .nest("/locations", api_locations)
         .nest("/inventory", api_inventory)
-        .nest("/raffles", api_raffles)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            inject_campaign_context,
-        ));
+        .nest("/raffles", api_raffles);
 
     let api_campaign_admin = with_admin(
         state.clone(),
@@ -227,7 +223,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/api/csrf-token", get(csrf_token))
         .merge(csrf(api_campaign_admin))
-        .nest("/api/campaigns/{slug}", csrf(campaign_slug_routes))
+        .nest(
+            "/api/campaigns/{slug}",
+            csrf(campaign_slug_routes).layer(middleware::from_fn_with_state(
+                state.clone(),
+                inject_campaign_context,
+            )),
+        )
         .nest("/api/auth", csrf(api_auth))
         .fallback(|| async { json_error(StatusCode::NOT_FOUND, "Route not found.") })
         .layer(middleware::from_fn_with_state(

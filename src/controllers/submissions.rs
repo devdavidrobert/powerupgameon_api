@@ -1,8 +1,9 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
-use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
+use crate::features::campaigns::presentation::{
+    CampaignContext, PublicCampaignContext, SlugIdPath,
+};
 use crate::features::locations::domain::GeoStatus;
-use crate::logger;
 use crate::middleware::request_context::RequestContext;
 use crate::models::registration::RegistrationModel;
 use crate::models::submission::{SubmissionCreateInput, SubmissionModel};
@@ -80,13 +81,13 @@ pub async fn get_all_submissions(
 pub async fn get_submission(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
 ) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
-    let sub = SubmissionModel::find_by_id(&state, &ctx.paths, &id)
+    let sub = SubmissionModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Submission not found."))?;
     let mut out = serialize_doc_data(&sub);
-    out.insert("id".into(), json!(id));
+    out.insert("id".into(), json!(path.id));
     Ok(SuccessResponse::data(out))
 }
 
@@ -123,6 +124,10 @@ pub async fn create_submission(
     let registration = RegistrationModel::find_by_id(&state, &ctx.paths, session_id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Registration not found for this session."))?;
+
+    if let Some(existing) = SubmissionModel::find_by_id(&state, &ctx.paths, session_id).await? {
+        return submission_success_response(&state.config, &ctx, session_id, existing, StatusCode::OK);
+    }
 
     let (full_name, normalized) = submission_identity_from_registration(&registration)?;
 
@@ -162,6 +167,22 @@ pub async fn create_submission(
     .await
     .map_err(|e| map_create_error(e, &req_ctx))?;
 
+    submission_success_response(
+        &state.config,
+        &ctx,
+        session_id,
+        result,
+        StatusCode::CREATED,
+    )
+}
+
+fn submission_success_response(
+    config: &crate::config::Config,
+    ctx: &CampaignContext,
+    session_id: &str,
+    result: Map<String, Value>,
+    status: StatusCode,
+) -> ApiResult<(StatusCode, Json<SuccessResponse<Value>>)> {
     let mut payload = serialize_doc_data(&result);
     payload.insert(
         "id".into(),
@@ -175,27 +196,25 @@ pub async fn create_submission(
     if result.get("prize").and_then(|v| v.as_str()) == Some("pending")
         && result.get("status").and_then(|v| v.as_str()) == Some("pending")
     {
-        match mint_spin_token(&state.config, ctx.campaign_id(), session_id) {
+        match mint_spin_token(config, ctx.campaign_id(), session_id) {
             Ok(token) => {
                 payload.insert("spinToken".into(), json!(token));
             }
             Err(err) => {
-                logger::log(
-                    &state.config,
-                    "error",
-                    "spin_token_mint_failed",
-                    json!({ "requestId": req_ctx.request_id, "err": err.to_string() }),
-                );
                 return Err(err);
             }
         }
+    }
+
+    if status == StatusCode::OK {
+        payload.insert("idempotent".into(), json!(true));
     }
 
     payload.remove("answers");
     payload.remove("ip");
 
     Ok((
-        StatusCode::CREATED,
+        status,
         Json(SuccessResponse {
             success: true,
             data: Some(Value::Object(payload)),
@@ -210,15 +229,15 @@ pub async fn create_submission(
 pub async fn delete_submission(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if SubmissionModel::find_by_id(&state, &ctx.paths, &id)
+    if SubmissionModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .is_none()
     {
         return Err(ApiError::bad_request("Submission not found."));
     }
-    SubmissionModel::delete(&state, &ctx.paths, &id).await?;
+    SubmissionModel::delete(&state, &ctx.paths, &path.id).await?;
     Ok(SuccessResponse::message(
         "Submission and linked registration records deleted.",
     ))
@@ -241,6 +260,13 @@ fn map_create_error(err: ApiError, ctx: &RequestContext) -> ApiError {
                 detail = %message,
                 "submission_validation_failed"
             );
+            if code == "INVALID_ANSWERS_LENGTH" {
+                return ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "QUESTIONS_CHANGED",
+                    "The quiz has changed since you started. Please refresh and try again.",
+                );
+            }
             return ApiError::bad_request(
                 "Submission validation failed. Please refresh and try again.",
             );

@@ -158,6 +158,27 @@ pub struct SlugPath {
     pub slug: String,
 }
 
+/// Path params for routes nested under `/api/campaigns/{slug}/…/{id}`.
+#[derive(serde::Deserialize)]
+pub struct SlugIdPath {
+    pub slug: String,
+    pub id: String,
+}
+
+/// Path params for `/api/campaigns/{slug}/raffles/{raffle_id}/winners`.
+#[derive(serde::Deserialize)]
+pub struct SlugRaffleIdPath {
+    pub slug: String,
+    pub raffle_id: String,
+}
+
+/// Path params for `/api/campaigns/{slug}/raffles/winners/{winner_id}`.
+#[derive(serde::Deserialize)]
+pub struct SlugWinnerIdPath {
+    pub slug: String,
+    pub winner_id: String,
+}
+
 impl SlugPath {
     pub async fn into_context(self, state: &AppState) -> ApiResult<CampaignContext> {
         let campaign = CampaignService::resolve_by_slug(state, &self.slug).await?;

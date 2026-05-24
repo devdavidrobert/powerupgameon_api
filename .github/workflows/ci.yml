@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test
+
+  stress-smoke:
+    runs-on: ubuntu-latest
+    needs: rust
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17F747341A78DE341AEC926E3790B5141E5
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Start API (rate limits disabled)
+        env:
+          RATE_LIMIT_ENABLED: "false"
+          PORT: "4000"
+          NODE_ENV: test
+          API_CSRF_SECRET: ci-csrf-secret
+          SPIN_TOKEN_SECRET: ci-spin-secret
+        run: |
+          cargo build --release
+          ./target/release/powerupgameon-api &
+          echo $! > /tmp/api.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API failed to start (Firebase credentials may be required)"
+          exit 1
+        continue-on-error: true
+
+      - name: Run k6 smoke profile
+        working-directory: stress-tests
+        env:
+          API_URL: http://localhost:4000/api
+          CAMPAIGN_SLUG: test3
+          RATE_LIMIT_ENABLED: "false"
+        run: bash run-stress-test.sh smoke
+        continue-on-error: true
+
+      - name: Upload k6 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-smoke-results
+          path: stress-tests/k6-results/
+          if-no-files-found: ignore
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f /tmp/api.pid ]; then
+            kill "$(cat /tmp/api.pid)" || true
+          fi

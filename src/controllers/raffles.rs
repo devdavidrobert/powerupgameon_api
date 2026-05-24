@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
-use crate::features::campaigns::presentation::CampaignContext;
+use crate::features::campaigns::presentation::{CampaignContext, SlugRaffleIdPath, SlugWinnerIdPath};
 use crate::models::raffle::RaffleModel;
 use crate::models::submission::SubmissionModel;
 use crate::utils::firestore::value_to_iso;
@@ -37,16 +37,16 @@ pub async fn get_all_raffles(
 pub async fn get_raffle_winners(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(raffle_id): Path<String>,
+    Path(path): Path<SlugRaffleIdPath>,
 ) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
-    if RaffleModel::find_raffle_by_id(&state, &ctx.paths, &raffle_id)
+    if RaffleModel::find_raffle_by_id(&state, &ctx.paths, &path.raffle_id)
         .await?
         .is_none()
     {
         return Err(ApiError::bad_request("Raffle not found."));
     }
 
-    let winners = RaffleModel::find_winners_by_raffle(&state, &ctx.paths, &raffle_id).await?;
+    let winners = RaffleModel::find_winners_by_raffle(&state, &ctx.paths, &path.raffle_id).await?;
     let data = winners
         .into_iter()
         .map(|mut w| {
@@ -175,13 +175,13 @@ pub struct UpdateWinnerBody {
 pub async fn update_winner_gift_status(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(winner_id): Path<String>,
+    Path(path): Path<SlugWinnerIdPath>,
     Json(body): Json<UpdateWinnerBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
     let Some(gift_received) = body.gift_received else {
         return Err(ApiError::bad_request("giftReceived must be a boolean."));
     };
-    RaffleModel::update_gift_received(&state, &ctx.paths, &winner_id, gift_received).await?;
+    RaffleModel::update_gift_received(&state, &ctx.paths, &path.winner_id, gift_received).await?;
     Ok(SuccessResponse::message("Gift status updated."))
 }
 

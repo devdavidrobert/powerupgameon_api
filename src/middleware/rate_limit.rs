@@ -27,14 +27,62 @@ pub struct RateLimitRule {
     pub max: u32,
 }
 
-pub async fn check_rate_limit(
-    state: &AppState,
+fn full_rate_limit_key(config: &Config, rule: &RateLimitRule, key: &str) -> String {
+    match &config.rate_limit_key_prefix {
+        Some(prefix) => format!("{prefix}:{}:{key}", rule.prefix),
+        None => format!("{}:{key}", rule.prefix),
+    }
+}
+
+pub fn is_global_rate_limit_exempt(path: &str) -> bool {
+    path == "/health" || path == "/api/csrf-token"
+}
+
+pub fn global_rule(state: &AppState) -> RateLimitRule {
+    RateLimitRule {
+        prefix: "rl_global",
+        window: Duration::from_secs(state.config.global_rate_limit_window_secs),
+        max: state.config.global_rate_limit_max,
+    }
+}
+
+pub fn registration_rule(state: &AppState) -> RateLimitRule {
+    RateLimitRule {
+        prefix: "rl_reg",
+        window: Duration::from_secs(60 * 60),
+        max: state.config.registration_rate_limit_max,
+    }
+}
+
+pub fn submission_rule(_state: &AppState) -> RateLimitRule {
+    RateLimitRule {
+        prefix: "rl_sub",
+        window: Duration::from_secs(15 * 60),
+        max: 30,
+    }
+}
+
+pub fn spin_rule(state: &AppState) -> RateLimitRule {
+    RateLimitRule {
+        prefix: "rl_spin",
+        window: Duration::from_secs(60 * 60),
+        max: state.config.spin_rate_limit_max,
+    }
+}
+
+pub async fn check_rate_limit_config(
+    config: &Config,
+    redis: &Option<redis::aio::ConnectionManager>,
     key: &str,
     rule: &RateLimitRule,
 ) -> Result<(), Response> {
-    let full_key = format!("{}:{}", rule.prefix, key);
+    if !config.rate_limit_enabled {
+        return Ok(());
+    }
 
-    if let Some(redis) = &state.redis {
+    let full_key = full_rate_limit_key(config, rule, key);
+
+    if let Some(redis) = redis {
         let mut conn = redis.clone();
         let count: u32 = conn.incr(&full_key, 1).await.map_err(|_| {
             json_error(
@@ -77,6 +125,14 @@ pub async fn check_rate_limit(
     Ok(())
 }
 
+pub async fn check_rate_limit(
+    state: &AppState,
+    key: &str,
+    rule: &RateLimitRule,
+) -> Result<(), Response> {
+    check_rate_limit_config(&state.config, &state.redis, key, rule).await
+}
+
 fn rate_limit_message(prefix: &str) -> &'static str {
     match prefix {
         "rl_reg" => "Too many registration attempts from this IP. Please try again in an hour.",
@@ -86,41 +142,22 @@ fn rate_limit_message(prefix: &str) -> &'static str {
     }
 }
 
-pub const GLOBAL_RULE: RateLimitRule = RateLimitRule {
-    prefix: "rl_global",
-    window: Duration::from_secs(15 * 60),
-    max: 200,
-};
-
-pub const REGISTRATION_RULE: RateLimitRule = RateLimitRule {
-    prefix: "rl_reg",
-    window: Duration::from_secs(60 * 60),
-    max: 3,
-};
-
-pub const SUBMISSION_RULE: RateLimitRule = RateLimitRule {
-    prefix: "rl_sub",
-    window: Duration::from_secs(15 * 60),
-    max: 30,
-};
-
-pub const SPIN_RULE: RateLimitRule = RateLimitRule {
-    prefix: "rl_spin",
-    window: Duration::from_secs(60 * 60),
-    max: 8,
-};
-
 pub async fn global_rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    let path = req.uri().path();
+    if is_global_rate_limit_exempt(path) {
+        return next.run(req).await;
+    }
+
     let ip = crate::utils::client_ip::get_client_ip_from_request(
         req.headers(),
         req.extensions(),
         state.config.trust_proxy,
     );
-    if let Err(resp) = check_rate_limit(&state, &ip, &GLOBAL_RULE).await {
+    if let Err(resp) = check_rate_limit(&state, &ip, &global_rule(&state)).await {
         return resp;
     }
     next.run(req).await
@@ -136,7 +173,7 @@ pub async fn registration_rate_limit_middleware(
         req.extensions(),
         state.config.trust_proxy,
     );
-    if let Err(resp) = check_rate_limit(&state, &ip, &REGISTRATION_RULE).await {
+    if let Err(resp) = check_rate_limit(&state, &ip, &registration_rule(&state)).await {
         return resp;
     }
     next.run(req).await
@@ -152,7 +189,7 @@ pub async fn submission_rate_limit_middleware(
         req.extensions(),
         state.config.trust_proxy,
     );
-    if let Err(resp) = check_rate_limit(&state, &ip, &SUBMISSION_RULE).await {
+    if let Err(resp) = check_rate_limit(&state, &ip, &submission_rule(&state)).await {
         return resp;
     }
     next.run(req).await
@@ -191,7 +228,7 @@ pub async fn spin_rate_limit_middleware(
         Err(_) => return json_error(StatusCode::BAD_REQUEST, "Unable to read spin request body."),
     };
     let key = spin_rate_limit_key(&state.config, &ip, &bytes);
-    if let Err(resp) = check_rate_limit(&state, &key, &SPIN_RULE).await {
+    if let Err(resp) = check_rate_limit(&state, &key, &spin_rule(&state)).await {
         return resp;
     }
     next.run(Request::from_parts(parts, Body::from(bytes)))

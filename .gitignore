@@ -1,4 +1,5 @@
 /target
+stress-tests/k6-results/
 .env
 serviceAccount.json
 serviceAccountKey.json

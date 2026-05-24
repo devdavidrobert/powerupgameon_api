@@ -123,6 +123,19 @@ cargo test
 
 Feature-level integration tests cover CSRF, spin tokens, campaign context, geo validation, inventory staggering, and auth middleware.
 
+### Load / stress tests (k6)
+
+See [`stress-tests/STRESS_TEST_README.md`](stress-tests/STRESS_TEST_README.md). Quick smoke run against a local API:
+
+```bash
+cd stress-tests
+brew install k6   # once
+API_URL=http://localhost:4000/api \
+CAMPAIGN_SLUG=test3 \
+ADMIN_TOKEN=$(./get-admin-token.sh) \
+bash run-stress-test.sh smoke
+```
+
 ---
 
 ## Health check

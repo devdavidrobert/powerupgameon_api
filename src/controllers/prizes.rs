@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::domain::CampaignStatus;
-use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
+use crate::features::campaigns::presentation::{
+    CampaignContext, PublicCampaignContext, SlugIdPath,
+};
 use crate::features::spin::domain::is_consolation_prize;
 use crate::models::prize::PrizeModel;
 use crate::utils::firestore::document_id_from_map;
@@ -32,9 +34,9 @@ pub async fn get_all_prizes(
 pub async fn get_prize(
     State(state): State<Arc<AppState>>,
     PublicCampaignContext(ctx): PublicCampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
 ) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
-    let prize = PrizeModel::find_by_id(&state, &ctx.paths, &id)
+    let prize = PrizeModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Prize not found."))?;
     Ok(SuccessResponse::data(prize))
@@ -82,10 +84,10 @@ pub async fn create_prize(
 pub async fn update_prize(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
     Json(body): Json<PrizeBody>,
 ) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
-    if PrizeModel::find_by_id(&state, &ctx.paths, &id)
+    if PrizeModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .is_none()
     {
@@ -101,16 +103,16 @@ pub async fn update_prize(
     if let Some(order) = body.order {
         updates.insert("order".into(), json!(order));
     }
-    let updated = PrizeModel::update(&state, &ctx.paths, &id, updates).await?;
+    let updated = PrizeModel::update(&state, &ctx.paths, &path.id, updates).await?;
     Ok(SuccessResponse::data(updated))
 }
 
 pub async fn delete_prize(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if PrizeModel::find_by_id(&state, &ctx.paths, &id)
+    if PrizeModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .is_none()
     {
@@ -121,7 +123,7 @@ pub async fn delete_prize(
         let all = PrizeModel::find_all(&state, &ctx.paths).await?;
         let target = all
             .iter()
-            .find(|p| document_id_from_map(p).as_deref() == Some(id.as_str()));
+            .find(|p| document_id_from_map(p).as_deref() == Some(path.id.as_str()));
         if let Some(prize) = target {
             if is_consolation_prize(prize) {
                 let consolation_count = all.iter().filter(|p| is_consolation_prize(p)).count();
@@ -136,6 +138,6 @@ pub async fn delete_prize(
         }
     }
 
-    PrizeModel::delete(&state, &ctx.paths, &id).await?;
+    PrizeModel::delete(&state, &ctx.paths, &path.id).await?;
     Ok(SuccessResponse::message("Prize deleted."))
 }

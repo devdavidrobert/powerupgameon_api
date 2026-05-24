@@ -1,6 +1,8 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
-use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
+use crate::features::campaigns::presentation::{
+    CampaignContext, PublicCampaignContext, SlugIdPath,
+};
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
 use crate::models::registration::{RegistrationInput, RegistrationModel};
@@ -175,7 +177,19 @@ pub async fn register(
     )
     .await
     .map_err(|e| {
-        if let ApiError::WithStatus { code: Some(code), .. } = &e {
+        if let ApiError::WithStatus {
+            code: Some(code),
+            message,
+            ..
+        } = &e
+        {
+            tracing::warn!(
+                request_id = %req_ctx.request_id,
+                session_id = %session_id,
+                code = %code,
+                detail = %message,
+                "registration_rejected"
+            );
             if code == "NAME_TAKEN" {
                 return ApiError::with_code(
                     StatusCode::CONFLICT,
@@ -239,15 +253,15 @@ pub async fn register(
 pub async fn delete_registration(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if RegistrationModel::find_by_id(&state, &ctx.paths, &id)
+    if RegistrationModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .is_none()
     {
         return Err(ApiError::bad_request("Registration not found."));
     }
-    RegistrationModel::delete(&state, &ctx.paths, &id).await?;
+    RegistrationModel::delete(&state, &ctx.paths, &path.id).await?;
     Ok(SuccessResponse::message(
         "Registration deleted. Player can now replay.",
     ))

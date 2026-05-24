@@ -1,6 +1,8 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
-use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
+use crate::features::campaigns::presentation::{
+    CampaignContext, PublicCampaignContext, SlugIdPath,
+};
 use crate::models::question::QuestionModel;
 use axum::{
     extract::{Path, State},
@@ -50,9 +52,9 @@ pub async fn get_all_questions_admin(
 pub async fn get_question(
     State(state): State<Arc<AppState>>,
     PublicCampaignContext(ctx): PublicCampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
 ) -> ApiResult<(HeaderMap, Json<SuccessResponse<Map<String, Value>>>)> {
-    let question = QuestionModel::find_by_id(&state, &ctx.paths, &id)
+    let question = QuestionModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Question not found."))?;
     Ok((
@@ -114,10 +116,10 @@ pub async fn create_question(
 pub async fn update_question(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
     Json(body): Json<QuestionBody>,
 ) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
-    if QuestionModel::find_by_id(&state, &ctx.paths, &id)
+    if QuestionModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .is_none()
     {
@@ -142,22 +144,22 @@ pub async fn update_question(
     if let Some(order) = body.order {
         updates.insert("order".into(), json!(order));
     }
-    let updated = QuestionModel::update(&state, &ctx.paths, &id, updates).await?;
+    let updated = QuestionModel::update(&state, &ctx.paths, &path.id, updates).await?;
     Ok(SuccessResponse::data(updated))
 }
 
 pub async fn delete_question(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
-    Path(id): Path<String>,
+    Path(path): Path<SlugIdPath>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if QuestionModel::find_by_id(&state, &ctx.paths, &id)
+    if QuestionModel::find_by_id(&state, &ctx.paths, &path.id)
         .await?
         .is_none()
     {
         return Err(ApiError::bad_request("Question not found."));
     }
-    QuestionModel::delete(&state, &ctx.paths, &id).await?;
+    QuestionModel::delete(&state, &ctx.paths, &path.id).await?;
     Ok(SuccessResponse::message("Question deleted."))
 }
 

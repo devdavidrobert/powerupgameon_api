@@ -10,6 +10,12 @@ pub struct Config {
     pub firebase_service_account_json: Option<String>,
     pub allowed_origins: Vec<String>,
     pub trust_proxy: bool,
+    pub rate_limit_enabled: bool,
+    pub global_rate_limit_max: u32,
+    pub global_rate_limit_window_secs: u64,
+    pub registration_rate_limit_max: u32,
+    pub spin_rate_limit_max: u32,
+    pub rate_limit_key_prefix: Option<String>,
     pub rate_limit_window_ms: u64,
     pub rate_limit_max: u32,
     pub api_csrf_secret: String,
@@ -85,6 +91,11 @@ impl Config {
 
         let trust_proxy = matches!(env::var("TRUST_PROXY").as_deref(), Ok("1") | Ok("true"));
 
+        let rate_limit_enabled = !matches!(
+            env::var("RATE_LIMIT_ENABLED").as_deref(),
+            Ok("0") | Ok("false") | Ok("FALSE")
+        );
+
         let api_csrf_secret = env::var("API_CSRF_SECRET").unwrap_or_else(|_| {
             if is_production {
                 String::new()
@@ -146,6 +157,31 @@ impl Config {
             .ok()
             .filter(|s| !s.trim().is_empty());
 
+        let global_rate_limit_max = env::var("GLOBAL_RATE_LIMIT_MAX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(200);
+
+        let global_rate_limit_window_secs = env::var("GLOBAL_RATE_LIMIT_WINDOW_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(15 * 60);
+
+        let registration_rate_limit_max = env::var("REGISTRATION_RATE_LIMIT_MAX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+
+        let spin_rate_limit_max = env::var("SPIN_RATE_LIMIT_MAX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8);
+
+        let rate_limit_key_prefix = env::var("RATE_LIMIT_KEY_PREFIX")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             port,
             node_env,
@@ -154,8 +190,14 @@ impl Config {
             firebase_service_account_json: env::var("FIREBASE_SERVICE_ACCOUNT_JSON").ok(),
             allowed_origins,
             trust_proxy,
-            rate_limit_window_ms: 15 * 60 * 1000,
-            rate_limit_max: 200,
+            rate_limit_enabled,
+            global_rate_limit_max,
+            global_rate_limit_window_secs,
+            registration_rate_limit_max,
+            spin_rate_limit_max,
+            rate_limit_key_prefix,
+            rate_limit_window_ms: global_rate_limit_window_secs * 1000,
+            rate_limit_max: global_rate_limit_max,
             api_csrf_secret,
             spin_token_secret,
             spin_token_ttl_minutes,
