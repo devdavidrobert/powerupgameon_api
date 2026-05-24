@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::infrastructure::CampaignPaths;
 use crate::features::locations::domain::Location;
-use crate::utils::firestore::millis_now;
+use crate::utils::firestore::{document_id_from_map, millis_now};
 use firestore::FirestoreQueryDirection;
 use serde_json::{json, Map, Value};
 
@@ -21,7 +21,7 @@ impl LocationRepository {
             .from(LOCATIONS_SUBCOL)
             .parent(parent)
             .order_by([("name", FirestoreQueryDirection::Ascending)])
-            .obj()
+            .obj::<Map<String, Value>>()
             .query()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
@@ -30,7 +30,7 @@ impl LocationRepository {
             .into_iter()
             .filter_map(|mut row| {
                 if !row.contains_key("id") {
-                    if let Some(id) = doc_id(&row) {
+                    if let Some(id) = document_id_from_map(&row) {
                         row.insert("id".into(), json!(id));
                     }
                 }
@@ -80,6 +80,7 @@ impl LocationRepository {
         let now = millis_now();
         let parent = paths.parent_str(&state.db.client)?;
         let payload = json!({
+            "id": id,
             "name": name,
             "centerLat": center_lat,
             "centerLng": center_lng,
@@ -164,7 +165,7 @@ pub fn map_location(doc: Map<String, Value>) -> Option<Location> {
         .get("id")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .or_else(|| doc_id(&doc))?;
+        .or_else(|| document_id_from_map(&doc))?;
 
     Some(Location {
         id,
@@ -180,12 +181,6 @@ pub fn map_location(doc: Map<String, Value>) -> Option<Location> {
             .get("updatedAt")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
     })
-}
-
-fn doc_id(row: &Map<String, Value>) -> Option<String> {
-    row.get("__name__")
-        .and_then(|v| v.as_str())
-        .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
 }
 
 fn f64_from_value(value: &Value) -> Option<f64> {
@@ -229,7 +224,21 @@ mod tests {
     }
 
     #[test]
-    fn map_location_reads_firestore_name_path() {
+    fn map_location_reads_firestore_id_metadata() {
+        let doc = Map::from_iter([
+            ("_firestore_id".into(), json!("loc-from-firestore")),
+            ("name".into(), json!("Zone B")),
+            ("centerLat".into(), json!(-1.28)),
+            ("centerLng".into(), json!(36.81)),
+            ("radiusMeters".into(), json!(250)),
+        ]);
+
+        let location = map_location(doc).expect("location");
+        assert_eq!(location.id, "loc-from-firestore");
+    }
+
+    #[test]
+    fn map_location_reads_legacy_name_path() {
         let doc = Map::from_iter([
             (
                 "__name__".into(),

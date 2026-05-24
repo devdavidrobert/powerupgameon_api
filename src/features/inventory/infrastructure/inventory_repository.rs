@@ -7,7 +7,7 @@ use crate::features::inventory::domain::{InventorySlot, InventoryView};
 use crate::features::locations::infrastructure::LocationRepository;
 use crate::models::prize::PrizeModel;
 use crate::models::submission::FinalizeSpinResult;
-use crate::utils::firestore::millis_now;
+use crate::utils::firestore::{document_id_from_map, millis_now};
 use firestore::errors::{
     BackoffError, FirestoreDataNotFoundError, FirestoreError, FirestoreErrorPublicGenericDetails,
     FirestoreInvalidParametersError, FirestoreInvalidParametersPublicDetails,
@@ -46,7 +46,7 @@ impl InventoryRepository {
             .into_iter()
             .filter_map(|mut row| {
                 if !row.contains_key("id") {
-                    if let Some(id) = slot_doc_id(&row) {
+                    if let Some(id) = document_id_from_map(&row) {
                         row.insert("id".into(), json!(id));
                     }
                 }
@@ -435,7 +435,7 @@ fn map_slot(doc: Map<String, Value>) -> Option<InventorySlot> {
         .get("id")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .or_else(|| slot_doc_id(&doc))?;
+        .or_else(|| document_id_from_map(&doc))?;
 
     Some(InventorySlot {
         id,
@@ -450,12 +450,6 @@ fn map_slot(doc: Map<String, Value>) -> Option<InventorySlot> {
             .get("updatedAt")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
     })
-}
-
-fn slot_doc_id(row: &Map<String, Value>) -> Option<String> {
-    row.get("__name__")
-        .and_then(|v| v.as_str())
-        .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
 }
 
 fn i64_from_value(value: &Value) -> Option<i64> {

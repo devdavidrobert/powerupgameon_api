@@ -57,3 +57,17 @@ pub fn millis_from_value(value: &Value) -> Option<i64> {
         _ => None,
     }
 }
+
+/// Reads a Firestore document id from a deserialized row.
+/// firestore 0.47 injects `_firestore_id`; older code paths used `__name__` or an explicit `id` field.
+pub fn document_id_from_map(row: &Map<String, Value>) -> Option<String> {
+    row.get("_firestore_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| {
+            row.get("__name__")
+                .and_then(|v| v.as_str())
+                .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
+        })
+        .or_else(|| row.get("id").and_then(|v| v.as_str()).map(String::from))
+}
