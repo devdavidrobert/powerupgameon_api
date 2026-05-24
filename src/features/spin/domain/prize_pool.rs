@@ -91,7 +91,10 @@ pub fn prize_entry(prize: &Map<String, Value>) -> Option<SpinPoolEntry> {
     Some((prize.clone(), id))
 }
 
-pub fn spin_prize_from_entry(entry: &SpinPoolEntry, award_as_real: bool) -> (String, String, i64, bool) {
+pub fn spin_prize_from_entry(
+    entry: &SpinPoolEntry,
+    award_as_real: bool,
+) -> (String, String, i64, bool) {
     let (won, prize_id) = entry;
     let prize_name = won.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let order = won.get("order").and_then(|v| v.as_i64()).unwrap_or(0);

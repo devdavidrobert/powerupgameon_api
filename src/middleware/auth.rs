@@ -32,9 +32,7 @@ pub fn user_has_admin_access(user: &AuthUser, allowed_admin_emails: &[String]) -
         return true;
     }
     let email = user.email.as_deref().unwrap_or("").to_lowercase();
-    !allowed_admin_emails.is_empty()
-        && !email.is_empty()
-        && allowed_admin_emails.contains(&email)
+    !allowed_admin_emails.is_empty() && !email.is_empty() && allowed_admin_emails.contains(&email)
 }
 
 pub fn parse_bearer_token(auth_header: Option<&str>) -> Option<&str> {

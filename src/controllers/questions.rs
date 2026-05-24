@@ -55,7 +55,10 @@ pub async fn get_question(
     let question = QuestionModel::find_by_id(&state, &ctx.paths, &id)
         .await?
         .ok_or_else(|| ApiError::bad_request("Question not found."))?;
-    Ok((public_cache_headers(), SuccessResponse::data(to_public(question))))
+    Ok((
+        public_cache_headers(),
+        SuccessResponse::data(to_public(question)),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -71,7 +74,10 @@ pub async fn create_question(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
     Json(body): Json<QuestionBody>,
-) -> ApiResult<(axum::http::StatusCode, Json<SuccessResponse<Map<String, Value>>>)> {
+) -> ApiResult<(
+    axum::http::StatusCode,
+    Json<SuccessResponse<Map<String, Value>>>,
+)> {
     let text = body.text.as_deref().unwrap_or("").trim();
     let options = body.options.clone().unwrap_or_default();
     if text.is_empty() || options.len() < 2 {
@@ -91,12 +97,18 @@ pub async fn create_question(
     data.insert("text".into(), json!(text));
     data.insert(
         "options".into(),
-        json!(options.into_iter().map(|o| o.trim().to_string()).collect::<Vec<_>>()),
+        json!(options
+            .into_iter()
+            .map(|o| o.trim().to_string())
+            .collect::<Vec<_>>()),
     );
     data.insert("correctIndex".into(), json!(correct_index));
     data.insert("order".into(), json!(order));
     let question = QuestionModel::create(&state, &ctx.paths, data).await?;
-    Ok((axum::http::StatusCode::CREATED, SuccessResponse::data(question)))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        SuccessResponse::data(question),
+    ))
 }
 
 pub async fn update_question(
@@ -118,7 +130,10 @@ pub async fn update_question(
     if let Some(options) = body.options {
         updates.insert(
             "options".into(),
-            json!(options.into_iter().map(|o| o.trim().to_string()).collect::<Vec<_>>()),
+            json!(options
+                .into_iter()
+                .map(|o| o.trim().to_string())
+                .collect::<Vec<_>>()),
         );
     }
     if let Some(correct_index) = body.correct_index {

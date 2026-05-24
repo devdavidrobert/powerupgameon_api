@@ -17,9 +17,7 @@
 //! available they can be run explicitly with --ignored.
 
 use powerupgameon_api::features::uniqueness::application::UniquenessService;
-use powerupgameon_api::features::uniqueness::domain::{
-    UniquenessCheckResult, UniquenessLockKind,
-};
+use powerupgameon_api::features::uniqueness::domain::{UniquenessCheckResult, UniquenessLockKind};
 
 #[test]
 fn device_lock_id_format_is_stable_and_namespaced() {

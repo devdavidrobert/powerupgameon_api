@@ -32,7 +32,9 @@ pub fn assert_challenge_open_for_campaign(campaign: &Campaign) -> ApiResult<()> 
 mod tests {
     use super::*;
     use crate::error::ApiError;
-    use crate::features::campaigns::domain::{Campaign, CampaignStatus, GeoEnforcement, StaggerMode};
+    use crate::features::campaigns::domain::{
+        Campaign, CampaignStatus, GeoEnforcement, StaggerMode,
+    };
 
     fn sample_campaign(start: Option<i64>, end: Option<i64>) -> Campaign {
         Campaign {
@@ -58,7 +60,8 @@ mod tests {
     #[test]
     fn challenge_not_started_before_start_time() {
         let start = chrono::Utc::now().timestamp_millis() + 60_000;
-        let err = assert_challenge_open_for_campaign(&sample_campaign(Some(start), None)).unwrap_err();
+        let err =
+            assert_challenge_open_for_campaign(&sample_campaign(Some(start), None)).unwrap_err();
         assert!(matches!(
             err,
             ApiError::WithStatus {
@@ -73,7 +76,8 @@ mod tests {
     #[test]
     fn challenge_ended_after_end_time() {
         let end = chrono::Utc::now().timestamp_millis() - 60_000;
-        let err = assert_challenge_open_for_campaign(&sample_campaign(None, Some(end))).unwrap_err();
+        let err =
+            assert_challenge_open_for_campaign(&sample_campaign(None, Some(end))).unwrap_err();
         assert!(matches!(
             err,
             ApiError::WithStatus {

@@ -36,7 +36,8 @@ pub fn sign_csrf_payload(secret: &str, exp: i64, nonce: &str) -> String {
 }
 
 pub fn sign_spin_payload(secret: &str, campaign_id: &str, session_id: &str, exp: i64) -> String {
-    let payload_json = serde_json::json!({ "sid": session_id, "cid": campaign_id, "exp": exp }).to_string();
+    let payload_json =
+        serde_json::json!({ "sid": session_id, "cid": campaign_id, "exp": exp }).to_string();
     let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload_json);
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
     let tag = hmac::sign(&key, payload_b64.as_bytes());

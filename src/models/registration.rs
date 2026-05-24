@@ -9,9 +9,7 @@ use crate::features::locations::domain::{
 use crate::features::locations::infrastructure::{IpApiProvider, LocationRepository};
 use crate::features::uniqueness::application::UniquenessService;
 use crate::features::uniqueness::infrastructure::UniquenessRepository;
-use crate::utils::firestore::{
-    build_page_cursor, millis_now, start_after_cursor,
-};
+use crate::utils::firestore::{build_page_cursor, millis_now, start_after_cursor};
 use crate::utils::firestore_tx::tx_get_optional;
 use firestore::errors::{
     BackoffError, FirestoreError, FirestoreInvalidParametersError,
@@ -113,9 +111,9 @@ impl RegistrationModel {
             items.truncate(cap);
         }
         let next_cursor = if has_more {
-            items
-                .last()
-                .and_then(|row| build_page_cursor(row, "registeredAt", parent.as_str(), REGISTRATIONS_SUBCOL))
+            items.last().and_then(|row| {
+                build_page_cursor(row, "registeredAt", parent.as_str(), REGISTRATIONS_SUBCOL)
+            })
         } else {
             None
         };
@@ -155,9 +153,7 @@ impl RegistrationModel {
         let mut ip_geo_status = None;
 
         let has_enabled_zones = locations.iter().any(|l| l.enabled);
-        if state.config.ip_geo_enabled
-            && has_enabled_zones
-            && IpGeoService::is_public_ip(client_ip)
+        if state.config.ip_geo_enabled && has_enabled_zones && IpGeoService::is_public_ip(client_ip)
         {
             let ip_lookup =
                 IpApiProvider::lookup(client_ip, state.config.ip_geo_api_url.as_deref()).await;
@@ -268,10 +264,20 @@ impl RegistrationModel {
         };
 
         let parent = paths.parent_str(&state.db.client)?;
-        let writer = state.db.batch_writer().await.map_err(|e| ApiError::Internal(e.into()))?;
+        let writer = state
+            .db
+            .batch_writer()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
         let mut batch = writer.new_batch();
 
-        db_delete(&state.db.client, &mut batch, parent.as_str(), REGISTRATIONS_SUBCOL, id)?;
+        db_delete(
+            &state.db.client,
+            &mut batch,
+            parent.as_str(),
+            REGISTRATIONS_SUBCOL,
+            id,
+        )?;
         if let Some(normalized) = reg.get("normalizedName").and_then(|v| v.as_str()) {
             db_delete(
                 &state.db.client,
@@ -294,7 +300,10 @@ impl RegistrationModel {
             );
         }
 
-        batch.write().await.map_err(|e| ApiError::Internal(e.into()))?;
+        batch
+            .write()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
         Ok(())
     }
 }
@@ -321,7 +330,8 @@ fn register_tx<'b>(
     device_fingerprint: Option<serde_json::Value>,
 ) -> Pin<Box<dyn Future<Output = Result<(), BackoffError<FirestoreError>>> + Send + 'b>> {
     Box::pin(async move {
-        let name_doc = tx_get_optional(&db, parent.as_str(), REGISTRATIONS_SUBCOL, &name_ref).await?;
+        let name_doc =
+            tx_get_optional(&db, parent.as_str(), REGISTRATIONS_SUBCOL, &name_ref).await?;
 
         if name_doc.is_some() {
             return Err(tx_err("NAME_TAKEN"));
@@ -349,8 +359,8 @@ fn register_tx<'b>(
         // Device + IP uniqueness hardening (hard block for one entry per person).
         // Primary key is the stable client-generated deviceId persisted in localStorage.
         if let Some(ref dev) = device_id {
-            if let Some(existing) = UniquenessRepository::find_device_lock_tx(&db, parent.as_str(), dev)
-                .await?
+            if let Some(existing) =
+                UniquenessRepository::find_device_lock_tx(&db, parent.as_str(), dev).await?
             {
                 // Any prior lock for this device in the campaign means the device already participated.
                 // We treat it as used (permanent for the campaign) to enforce "one entry".
@@ -498,7 +508,8 @@ fn map_registration_error(err: FirestoreError) -> ApiError {
     if msg.contains("DEVICE_ALREADY_USED") {
         return ApiError::WithStatus {
             status: axum::http::StatusCode::CONFLICT,
-            message: "This device has already participated in the challenge. One entry per person.".into(),
+            message: "This device has already participated in the challenge. One entry per person."
+                .into(),
             code: Some("DEVICE_ALREADY_USED".into()),
             data: None,
         };

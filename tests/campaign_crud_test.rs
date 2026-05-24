@@ -58,9 +58,7 @@ async fn campaign_create_persists_name_in_firestore() {
         "name field missing in Firestore after create: {raw:?}"
     );
 
-    let listed = CampaignRepository::find_all(&state)
-        .await
-        .expect("list");
+    let listed = CampaignRepository::find_all(&state).await.expect("list");
     assert!(
         listed.iter().any(|c| c.id == created.id && c.name == name),
         "created campaign not found in list with name"
@@ -149,7 +147,10 @@ async fn partial_settings_update_preserves_name_and_slug() {
         .await
         .expect("raw doc");
     assert_eq!(raw.get("name").and_then(|v| v.as_str()), Some(name));
-    assert_eq!(raw.get("slug").and_then(|v| v.as_str()), Some(slug.as_str()));
+    assert_eq!(
+        raw.get("slug").and_then(|v| v.as_str()),
+        Some(slug.as_str())
+    );
 }
 
 #[tokio::test]
@@ -181,7 +182,10 @@ fn map_campaign_requires_name_field() {
     doc.insert("id".into(), json!("abc"));
     doc.insert("slug".into(), json!("test"));
     doc.insert("status".into(), json!("draft"));
-    assert!(map_campaign(doc).is_none(), "docs without name must be skipped");
+    assert!(
+        map_campaign(doc).is_none(),
+        "docs without name must be skipped"
+    );
 }
 
 #[test]

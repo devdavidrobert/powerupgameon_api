@@ -58,7 +58,11 @@ pub async fn get_all_registrations(
         RegistrationModel::find_player_page(&state, &ctx.paths, limit, cursor).await?;
     let ids: Vec<String> = items
         .iter()
-        .filter_map(|r| r.get("id").or_else(|| r.get("sessionId")).and_then(|v| v.as_str()))
+        .filter_map(|r| {
+            r.get("id")
+                .or_else(|| r.get("sessionId"))
+                .and_then(|v| v.as_str())
+        })
         .map(String::from)
         .collect();
     let completed = SubmissionModel::ids_that_exist(&state, &ctx.paths, &ids).await?;
@@ -268,7 +272,10 @@ fn validate_name_part(value: Option<&str>, label: &str) -> ApiResult<()> {
             "{label} may only contain letters, numbers, spaces, apostrophes, and hyphens."
         )));
     }
-    if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '\'' || c == '-') {
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '\'' || c == '-')
+    {
         return Err(ApiError::bad_request(format!(
             "{label} may only contain letters, numbers, spaces, apostrophes, and hyphens."
         )));

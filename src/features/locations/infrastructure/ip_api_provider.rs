@@ -16,9 +16,7 @@ impl IpApiProvider {
     pub async fn lookup(ip: &str, api_url_template: Option<&str>) -> IpGeoLookup {
         let url = match api_url_template.filter(|s| !s.is_empty()) {
             Some(template) => template.replace("{ip}", ip),
-            None => format!(
-                "http://ip-api.com/json/{ip}?fields=status,lat,lon"
-            ),
+            None => format!("http://ip-api.com/json/{ip}?fields=status,lat,lon"),
         };
 
         let client = match reqwest::Client::builder()

@@ -103,9 +103,7 @@ fn build_uri(path: &str, original_query: Option<&str>) -> Result<Uri, axum::http
     let path_and_query = if let Some(query) = original_query {
         let filtered = query
             .split('&')
-            .filter(|pair| {
-                !pair.starts_with("__path=") && !pair.starts_with("path=")
-            })
+            .filter(|pair| !pair.starts_with("__path=") && !pair.starts_with("path="))
             .collect::<Vec<_>>()
             .join("&");
         if filtered.is_empty() {
@@ -126,10 +124,9 @@ fn percent_decode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 out.push(byte);
                 i += 3;
                 continue;
@@ -147,8 +144,11 @@ mod tests {
 
     #[test]
     fn restores_path_from_vercel_query_param() {
-        let path = resolve_original_path(Some("__path=api/campaigns/test3/settings"), &HeaderMap::new())
-            .expect("path");
+        let path = resolve_original_path(
+            Some("__path=api/campaigns/test3/settings"),
+            &HeaderMap::new(),
+        )
+        .expect("path");
         assert_eq!(path, "/api/campaigns/test3/settings");
     }
 

@@ -108,7 +108,11 @@ impl CampaignRepository {
             .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Campaign create failed")))
     }
 
-    pub async fn update(state: &AppState, id: &str, data: Map<String, Value>) -> ApiResult<Campaign> {
+    pub async fn update(
+        state: &AppState,
+        id: &str,
+        data: Map<String, Value>,
+    ) -> ApiResult<Campaign> {
         let Some(mut payload): Option<Map<String, Value>> = state
             .db
             .client
@@ -163,18 +167,25 @@ pub fn map_campaign(doc: Map<String, Value>) -> Option<Campaign> {
 
     let slug = doc.get("slug")?.as_str()?.to_string();
     let name = doc.get("name")?.as_str()?.to_string();
-    let status = CampaignStatus::from_str(doc.get("status").and_then(|v| v.as_str()).unwrap_or("draft"));
+    let status = CampaignStatus::from_str(
+        doc.get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("draft"),
+    );
 
-    let stagger_schedule = doc.get("staggerSchedule").and_then(|v| v.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|step| {
-                Some(StaggerStep {
-                    release_at: step.get("releaseAt")?.as_i64()?,
-                    release_percent: step.get("releasePercent")?.as_f64()?,
+    let stagger_schedule = doc
+        .get("staggerSchedule")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|step| {
+                    Some(StaggerStep {
+                        release_at: step.get("releaseAt")?.as_i64()?,
+                        release_percent: step.get("releasePercent")?.as_f64()?,
+                    })
                 })
-            })
-            .collect()
-    });
+                .collect()
+        });
 
     Some(Campaign {
         id,
@@ -188,11 +199,15 @@ pub fn map_campaign(doc: Map<String, Value>) -> Option<Campaign> {
             .get("challengeEndTime")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
         stagger_mode: StaggerMode::from_str(
-            doc.get("staggerMode").and_then(|v| v.as_str()).unwrap_or("linear"),
+            doc.get("staggerMode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("linear"),
         ),
         stagger_schedule,
         geo_enforcement: GeoEnforcement::from_str(
-            doc.get("geoEnforcement").and_then(|v| v.as_str()).unwrap_or("reject"),
+            doc.get("geoEnforcement")
+                .and_then(|v| v.as_str())
+                .unwrap_or("reject"),
         ),
         created_at: doc
             .get("createdAt")
@@ -234,7 +249,9 @@ pub fn parse_stagger_schedule(value: &Value) -> ApiResult<Vec<StaggerStep>> {
             .and_then(|v| v.as_f64())
             .ok_or_else(|| ApiError::bad_request("Each stagger step needs releasePercent."))?;
         if !(0.0..=1.0).contains(&release_percent) {
-            return Err(ApiError::bad_request("releasePercent must be between 0 and 1."));
+            return Err(ApiError::bad_request(
+                "releasePercent must be between 0 and 1.",
+            ));
         }
         steps.push(StaggerStep {
             release_at,
@@ -320,7 +337,11 @@ pub fn parse_challenge_time_value(value: &Value) -> ApiResult<Value> {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
                 return Ok(json!(dt.timestamp_millis()));
             }
-            for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
+            for fmt in [
+                "%Y-%m-%dT%H:%M:%S%.f",
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%dT%H:%M",
+            ] {
                 if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(trimmed, fmt) {
                     return Ok(json!(naive.and_utc().timestamp_millis()));
                 }

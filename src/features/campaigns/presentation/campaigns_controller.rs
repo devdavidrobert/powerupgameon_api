@@ -2,13 +2,12 @@ use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::application::CampaignService;
 use crate::features::campaigns::domain::{CampaignStatus, GeoEnforcement, StaggerMode};
-use crate::models::question::QuestionModel;
 use crate::features::campaigns::infrastructure::{
     build_update_payload, campaign_to_json, parse_challenge_time_value, parse_stagger_schedule,
-    validate_challenge_window, validate_slug,
-    CampaignRepository, CampaignUpdateInput,
+    validate_challenge_window, validate_slug, CampaignRepository, CampaignUpdateInput,
 };
 use crate::features::campaigns::presentation::campaign_context::{CampaignContext, SlugPath};
+use crate::models::question::QuestionModel;
 use axum::{
     extract::{Path, State},
     Json,
@@ -127,7 +126,9 @@ pub async fn get_campaign_settings(
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
         axum::http::header::CACHE_CONTROL,
-        "public, max-age=30, stale-while-revalidate=60".parse().unwrap(),
+        "public, max-age=30, stale-while-revalidate=60"
+            .parse()
+            .unwrap(),
     );
     Ok((
         headers,
@@ -137,6 +138,19 @@ pub async fn get_campaign_settings(
             "updatedAt": ctx.campaign.updated_at,
         })),
     ))
+}
+
+pub async fn get_campaign_settings_admin(
+    ctx: CampaignContext,
+) -> ApiResult<Json<SuccessResponse<Value>>> {
+    Ok(SuccessResponse::data(json!({
+        "challengeStartTime": ctx.campaign.challenge_start_time,
+        "challengeEndTime": ctx.campaign.challenge_end_time,
+        "updatedAt": ctx.campaign.updated_at,
+        "staggerMode": ctx.campaign.stagger_mode.as_str(),
+        "staggerSchedule": ctx.campaign.stagger_schedule,
+        "geoEnforcement": ctx.campaign.geo_enforcement.as_str(),
+    })))
 }
 
 pub async fn update_campaign_settings(

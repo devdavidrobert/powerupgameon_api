@@ -3,20 +3,20 @@ use crate::controllers::{auth, prizes, questions, raffles, registrations, submis
 use crate::error::{json_error, SuccessResponse};
 use crate::features::campaigns::presentation::{
     archive_campaign, clear_campaign_timers, create_campaign, get_campaign, get_campaign_settings,
-    list_campaigns, update_campaign, update_campaign_settings,
+    get_campaign_settings_admin, list_campaigns, update_campaign, update_campaign_settings,
 };
 use crate::features::inventory::presentation::{list_inventory, upsert_inventory};
-use crate::features::spin::presentation::spin_wheel;
 use crate::features::locations::presentation::{
     create_location, delete_location, list_locations, update_location,
 };
+use crate::features::spin::presentation::spin_wheel;
 use crate::middleware::auth::{authenticate_middleware, require_admin_middleware};
 use crate::middleware::campaign_context::inject_campaign_context;
 use crate::middleware::challenge_window::require_challenge_open_middleware;
 use crate::middleware::csrf::{mint_csrf_token, require_csrf_middleware};
 use crate::middleware::rate_limit::{
-    global_rate_limit_middleware, registration_rate_limit_middleware,
-    submission_rate_limit_middleware, spin_rate_limit_middleware,
+    global_rate_limit_middleware, registration_rate_limit_middleware, spin_rate_limit_middleware,
+    submission_rate_limit_middleware,
 };
 use crate::middleware::request_context::request_context_middleware;
 use axum::{
@@ -39,7 +39,10 @@ fn with_admin(state: Arc<AppState>, router: Router<Arc<AppState>>) -> Router<Arc
             state.clone(),
             require_admin_middleware,
         ))
-        .layer(middleware::from_fn_with_state(state, authenticate_middleware))
+        .layer(middleware::from_fn_with_state(
+            state,
+            authenticate_middleware,
+        ))
 }
 
 fn with_challenge_open(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
@@ -69,7 +72,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 let Ok(origin_str) = origin.to_str() else {
                     return false;
                 };
-                cors_state.config.allowed_origins.contains(&origin_str.to_string())
+                cors_state
+                    .config
+                    .allowed_origins
+                    .contains(&origin_str.to_string())
             },
         ));
 
@@ -99,6 +105,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     .merge(with_admin(
         admin.clone(),
         Router::new()
+            .route("/admin/full", get(prizes::get_all_prizes_admin))
             .route("/", post(prizes::create_prize))
             .route(
                 "/{id}",
@@ -150,6 +157,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(with_admin(
             admin.clone(),
             Router::new()
+                .route("/admin/full", get(get_campaign_settings_admin))
                 .route("/", put(update_campaign_settings))
                 .route("/timers", delete(clear_campaign_timers)),
         ));
@@ -163,16 +171,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     let api_inventory = with_admin(
         admin.clone(),
-        Router::new()
-            .route("/", get(list_inventory).put(upsert_inventory)),
+        Router::new().route("/", get(list_inventory).put(upsert_inventory)),
     );
 
     let api_raffles = with_admin(
         admin,
         Router::new()
-            .route("/", get(raffles::get_all_raffles).post(raffles::create_raffle))
+            .route(
+                "/",
+                get(raffles::get_all_raffles).post(raffles::create_raffle),
+            )
             .route("/{raffle_id}/winners", get(raffles::get_raffle_winners))
-            .route("/winners/{winner_id}", patch(raffles::update_winner_gift_status)),
+            .route(
+                "/winners/{winner_id}",
+                patch(raffles::update_winner_gift_status),
+            ),
     );
 
     let campaign_slug_routes = Router::new()
@@ -220,7 +233,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/api/campaigns/{slug}", csrf(campaign_slug_routes))
         .nest("/api/auth", csrf(api_auth))
         .fallback(|| async { json_error(StatusCode::NOT_FOUND, "Route not found.") })
-        .layer(middleware::from_fn_with_state(state.clone(), global_rate_limit_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            global_rate_limit_middleware,
+        ))
         .layer(middleware::from_fn(request_context_middleware))
         .layer(RequestBodyLimitLayer::new(256 * 1024))
         .layer(SetResponseHeaderLayer::if_not_present(
@@ -245,7 +261,9 @@ async fn health() -> Json<serde_json::Value> {
 
 async fn csrf_token(State(state): State<Arc<AppState>>) -> axum::response::Response {
     match mint_csrf_token(&state.config) {
-        Ok(token) => SuccessResponse::data(serde_json::json!({ "csrfToken": token })).into_response(),
+        Ok(token) => {
+            SuccessResponse::data(serde_json::json!({ "csrfToken": token })).into_response()
+        }
         Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err),
     }
 }

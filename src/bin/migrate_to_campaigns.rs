@@ -109,8 +109,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "5".into())
         .parse()
         .unwrap_or(5);
-    migrate_inventory(&db, &paths, &default_location_id, &prize_counts, default_limit)
-        .await?;
+    migrate_inventory(
+        &db,
+        &paths,
+        &default_location_id,
+        &prize_counts,
+        default_limit,
+    )
+    .await?;
 
     backfill_location_ids(&db, &paths, &default_location_id).await?;
 
@@ -142,11 +148,7 @@ async fn create_campaign(db: &FirestoreService, slug: &str, name: &str) -> Resul
     Ok(id)
 }
 
-async fn migrate_collection(
-    db: &FirestoreService,
-    collection: &str,
-    parent: &str,
-) -> Result<()> {
+async fn migrate_collection(db: &FirestoreService, collection: &str, parent: &str) -> Result<()> {
     let docs: Vec<Map<String, Value>> = db
         .client
         .fluent()
@@ -203,7 +205,9 @@ async fn migrate_collection(
 }
 
 async fn ensure_default_location(db: &FirestoreService, paths: &CampaignPaths) -> Result<String> {
-    let parent = paths.parent_str(&db.client).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let parent = paths
+        .parent_str(&db.client)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let existing: Vec<Map<String, Value>> = db
         .client
         .fluent()
@@ -273,7 +277,9 @@ async fn migrate_inventory(
     prize_counts: &HashMap<String, i64>,
     default_limit: i32,
 ) -> Result<()> {
-    let parent = paths.parent_str(&db.client).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let parent = paths
+        .parent_str(&db.client)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let prizes: Vec<Map<String, Value>> = db
         .client
         .fluent()
@@ -293,7 +299,10 @@ async fn migrate_inventory(
             .unwrap_or("")
             .to_string();
         let prize_name = prize.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let is_real = prize.get("isRealPrize").and_then(|v| v.as_bool()).unwrap_or(true);
+        let is_real = prize
+            .get("isRealPrize")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         if !is_real || prize_id.is_empty() {
             continue;
         }
@@ -325,7 +334,9 @@ async fn backfill_location_ids(
     paths: &CampaignPaths,
     location_id: &str,
 ) -> Result<()> {
-    let parent = paths.parent_str(&db.client).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let parent = paths
+        .parent_str(&db.client)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     for collection in ["registrations", "submissions"] {
         let docs: Vec<Map<String, Value>> = db
             .client

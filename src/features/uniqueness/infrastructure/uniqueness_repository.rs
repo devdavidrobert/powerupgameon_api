@@ -1,11 +1,12 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::infrastructure::CampaignPaths;
-use crate::features::uniqueness::domain::{
-    DeviceFingerprint, DeviceLockDoc, UNIQUENESS_SUBCOL,
-};
+use crate::features::uniqueness::domain::{DeviceFingerprint, DeviceLockDoc, UNIQUENESS_SUBCOL};
 use crate::utils::firestore::millis_now;
-use firestore::errors::{BackoffError, FirestoreError, FirestoreInvalidParametersError, FirestoreInvalidParametersPublicDetails};
+use firestore::errors::{
+    BackoffError, FirestoreError, FirestoreInvalidParametersError,
+    FirestoreInvalidParametersPublicDetails,
+};
 use serde_json::{json, Map, Value};
 use std::future::Future;
 use std::pin::Pin;
@@ -22,7 +23,8 @@ impl UniquenessRepository {
         device_id: &str,
     ) -> ApiResult<Option<Map<String, Value>>> {
         let parent = paths.parent_str(&state.db.client)?;
-        let lock_id = crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
+        let lock_id =
+            crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
 
         let doc: Option<Map<String, Value>> = state
             .db
@@ -49,13 +51,7 @@ impl UniquenessRepository {
     ) -> Result<Option<Map<String, Value>>, BackoffError<FirestoreError>> {
         let lock_id =
             crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
-        crate::utils::firestore_tx::tx_get_optional(
-            db,
-            parent,
-            UNIQUENESS_SUBCOL,
-            &lock_id,
-        )
-        .await
+        crate::utils::firestore_tx::tx_get_optional(db, parent, UNIQUENESS_SUBCOL, &lock_id).await
     }
 
     /// Creates (or overwrites) a device lock document. Primarily used after a
@@ -72,7 +68,8 @@ impl UniquenessRepository {
         fingerprint: Option<DeviceFingerprint>,
     ) -> ApiResult<()> {
         let parent = paths.parent_str(&state.db.client)?;
-        let lock_id = crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
+        let lock_id =
+            crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
         let now = millis_now();
 
         let doc = DeviceLockDoc {
@@ -111,7 +108,8 @@ impl UniquenessRepository {
         device_id: &str,
     ) -> ApiResult<()> {
         let parent = paths.parent_str(&state.db.client)?;
-        let lock_id = crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
+        let lock_id =
+            crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
 
         // Best-effort delete; ignore not-found.
         let _ = state
@@ -136,7 +134,8 @@ impl UniquenessRepository {
         parent: &str,
         device_id: &str,
     ) -> ApiResult<()> {
-        let lock_id = crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
+        let lock_id =
+            crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
         db.fluent()
             .delete()
             .from(UNIQUENESS_SUBCOL)
@@ -168,7 +167,10 @@ impl UniquenessRepository {
         let parent = parent.to_string();
 
         Box::pin(async move {
-            let lock_id = crate::features::uniqueness::application::UniquenessService::device_lock_id(&device_id);
+            let lock_id =
+                crate::features::uniqueness::application::UniquenessService::device_lock_id(
+                    &device_id,
+                );
 
             let payload = json!({
                 "kind": "device_lock",

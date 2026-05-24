@@ -20,11 +20,9 @@ impl AppState {
         let redis = if let Some(url) = &config.redis_url {
             let client = redis::Client::open(url.as_str())
                 .map_err(|err| anyhow::anyhow!("Failed to open Redis client: {err}"))?;
-            Some(
-                ConnectionManager::new(client)
-                    .await
-                    .map_err(|err| anyhow::anyhow!("REDIS_URL is set but Redis is unreachable: {err}"))?,
-            )
+            Some(ConnectionManager::new(client).await.map_err(|err| {
+                anyhow::anyhow!("REDIS_URL is set but Redis is unreachable: {err}")
+            })?)
         } else {
             None
         };

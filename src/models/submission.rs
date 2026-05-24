@@ -103,9 +103,9 @@ impl SubmissionModel {
             items.truncate(cap);
         }
         let next_cursor = if has_more {
-            items
-                .last()
-                .and_then(|row| build_page_cursor(row, "submittedAt", parent.as_str(), SUBMISSIONS_SUBCOL))
+            items.last().and_then(|row| {
+                build_page_cursor(row, "submittedAt", parent.as_str(), SUBMISSIONS_SUBCOL)
+            })
         } else {
             None
         };
@@ -253,7 +253,11 @@ impl SubmissionModel {
         let total = questions.len() as i64;
         let percentage = ((score as f64 / total as f64) * 100.0).round() as i64;
         let prize = if score == total { "pending" } else { "Nothing" };
-        let status = if prize == "pending" { "pending" } else { "completed" };
+        let status = if prize == "pending" {
+            "pending"
+        } else {
+            "completed"
+        };
 
         let parent = paths.parent_str(&state.db.client)?;
         let db = state.db.client.clone();
@@ -305,9 +309,9 @@ impl SubmissionModel {
         let sub = Self::find_by_id(state, paths, id).await?;
         let reg = RegistrationModel::find_by_id(state, paths, id).await?;
 
-        let decrement = sub.as_ref().and_then(|sub| {
-            resolve_inventory_decrement(sub, &prizes)
-        });
+        let decrement = sub
+            .as_ref()
+            .and_then(|sub| resolve_inventory_decrement(sub, &prizes));
         let delete_registration = reg.is_some();
         let normalized_name = reg
             .as_ref()
@@ -347,7 +351,9 @@ fn resolve_inventory_decrement(
     }
     let prize = prizes.iter().find(|p| {
         p.get("name").and_then(|n| n.as_str()) == Some(prize_name)
-            && p.get("isRealPrize").and_then(|v| v.as_bool()).unwrap_or(true)
+            && p.get("isRealPrize")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
     })?;
     let prize_id = prize.get("id").and_then(|v| v.as_str())?;
     Some((location_id.to_string(), prize_id.to_string()))
@@ -436,19 +442,23 @@ fn create_tx<'b>(
     percentage: i64,
     prize: &str,
     status: &str,
-) -> Pin<Box<dyn Future<Output = Result<Map<String, Value>, BackoffError<FirestoreError>>> + Send + 'b>> {
+) -> Pin<
+    Box<dyn Future<Output = Result<Map<String, Value>, BackoffError<FirestoreError>>> + Send + 'b>,
+> {
     let prize = prize.to_string();
     let status = status.to_string();
     Box::pin(async move {
         let session_doc =
             tx_get_optional(&db, parent.as_str(), SESSIONS_SUBCOL, &session_id).await?;
         if session_doc.is_none() {
-            return Err(BackoffError::Permanent(FirestoreError::InvalidParametersError(
-                FirestoreInvalidParametersError::new(FirestoreInvalidParametersPublicDetails::new(
-                    "NO_SESSION".to_string(),
-                    "code".to_string(),
+            return Err(BackoffError::Permanent(
+                FirestoreError::InvalidParametersError(FirestoreInvalidParametersError::new(
+                    FirestoreInvalidParametersPublicDetails::new(
+                        "NO_SESSION".to_string(),
+                        "code".to_string(),
+                    ),
                 )),
-            )));
+            ));
         }
 
         let sub_doc =

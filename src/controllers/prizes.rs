@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
-use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
 use crate::features::campaigns::domain::CampaignStatus;
+use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
 use crate::features::spin::domain::is_consolation_prize;
 use crate::models::prize::PrizeModel;
 use crate::utils::firestore::document_id_from_map;
@@ -43,8 +43,18 @@ pub async fn get_prize(
 #[derive(Deserialize)]
 pub struct PrizeBody {
     pub name: Option<String>,
+    #[serde(rename = "isRealPrize")]
     pub is_real_prize: Option<bool>,
     pub order: Option<i64>,
+}
+
+pub async fn get_all_prizes_admin(
+    State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
+) -> ApiResult<Json<SuccessResponse<Vec<Map<String, Value>>>>> {
+    Ok(SuccessResponse::data(
+        PrizeModel::find_all(&state, &ctx.paths).await?,
+    ))
 }
 
 pub async fn create_prize(
@@ -109,7 +119,9 @@ pub async fn delete_prize(
 
     if ctx.campaign.status == CampaignStatus::Active {
         let all = PrizeModel::find_all(&state, &ctx.paths).await?;
-        let target = all.iter().find(|p| document_id_from_map(p).as_deref() == Some(id.as_str()));
+        let target = all
+            .iter()
+            .find(|p| document_id_from_map(p).as_deref() == Some(id.as_str()));
         if let Some(prize) = target {
             if is_consolation_prize(prize) {
                 let consolation_count = all.iter().filter(|p| is_consolation_prize(p)).count();

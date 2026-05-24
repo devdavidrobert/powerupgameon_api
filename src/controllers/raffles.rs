@@ -135,8 +135,14 @@ pub async fn create_raffle(
                 "fullName".into(),
                 s.get("fullName").cloned().unwrap_or(Value::Null),
             );
-            m.insert("prize".into(), s.get("prize").cloned().unwrap_or(Value::Null));
-            m.insert("score".into(), s.get("score").cloned().unwrap_or(Value::Null));
+            m.insert(
+                "prize".into(),
+                s.get("prize").cloned().unwrap_or(Value::Null),
+            );
+            m.insert(
+                "score".into(),
+                s.get("score").cloned().unwrap_or(Value::Null),
+            );
             m.insert(
                 "percentage".into(),
                 s.get("percentage").cloned().unwrap_or(Value::Null),
@@ -150,8 +156,7 @@ pub async fn create_raffle(
         .collect();
 
     let (raffle, winner_rows) =
-        RaffleModel::create_raffle_with_winners(&state, &ctx.paths, &raffle_name, winners)
-            .await?;
+        RaffleModel::create_raffle_with_winners(&state, &ctx.paths, &raffle_name, winners).await?;
 
     let response = json!({
         "raffle": serialize_raffle(&raffle),

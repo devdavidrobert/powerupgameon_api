@@ -69,8 +69,14 @@ impl RaffleModel {
             .map_err(|e| ApiError::Internal(e.into()))?;
 
         winners.sort_by(|a, b| {
-            let ga = a.get("giftReceived").and_then(|v| v.as_bool()).unwrap_or(false);
-            let gb = b.get("giftReceived").and_then(|v| v.as_bool()).unwrap_or(false);
+            let ga = a
+                .get("giftReceived")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let gb = b
+                .get("giftReceived")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if ga == gb {
                 let fa = a.get("fullName").and_then(|v| v.as_str()).unwrap_or("");
                 let fb = b.get("fullName").and_then(|v| v.as_str()).unwrap_or("");
@@ -94,7 +100,11 @@ impl RaffleModel {
         let now = millis_now();
         let raffle_id = uuid::Uuid::new_v4().to_string();
         let parent = paths.parent_str(&state.db.client)?;
-        let writer = state.db.batch_writer().await.map_err(|e| ApiError::Internal(e.into()))?;
+        let writer = state
+            .db
+            .batch_writer()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
         let mut batch = writer.new_batch();
 
         state
@@ -136,7 +146,10 @@ impl RaffleModel {
             winner_results.push(payload);
         }
 
-        batch.write().await.map_err(|e| ApiError::Internal(e.into()))?;
+        batch
+            .write()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
 
         let mut raffle = Map::new();
         raffle.insert("id".into(), json!(raffle_id));

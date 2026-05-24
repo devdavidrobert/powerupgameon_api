@@ -54,10 +54,7 @@ impl Config {
             .map(|s| s.to_lowercase())
             .collect();
 
-        let trust_proxy = matches!(
-            env::var("TRUST_PROXY").as_deref(),
-            Ok("1") | Ok("true")
-        );
+        let trust_proxy = matches!(env::var("TRUST_PROXY").as_deref(), Ok("1") | Ok("true"));
 
         let api_csrf_secret = env::var("API_CSRF_SECRET").unwrap_or_else(|_| {
             if is_production {
@@ -87,9 +84,7 @@ impl Config {
             .parse()
             .unwrap_or(60);
 
-        let redis_url = env::var("REDIS_URL")
-            .ok()
-            .filter(|s| !s.trim().is_empty());
+        let redis_url = env::var("REDIS_URL").ok().filter(|s| !s.trim().is_empty());
 
         if is_production && redis_url.is_none() {
             tracing::warn!(

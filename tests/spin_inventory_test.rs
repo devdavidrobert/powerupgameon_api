@@ -2,10 +2,7 @@ use powerupgameon_api::features::inventory::domain::InventorySlot;
 
 #[test]
 fn slot_key_format() {
-    assert_eq!(
-        InventorySlot::slot_key("loc-1", "prize-2"),
-        "loc-1_prize-2"
-    );
+    assert_eq!(InventorySlot::slot_key("loc-1", "prize-2"), "loc-1_prize-2");
 }
 
 #[test]

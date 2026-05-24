@@ -12,9 +12,7 @@ impl InventoryService {
         match campaign.stagger_mode {
             StaggerMode::Immediate => slot.total_quantity,
             StaggerMode::Linear => Self::linear_releasable(campaign, slot.total_quantity, now_ms),
-            StaggerMode::Stepped => {
-                Self::stepped_releasable(campaign, slot.total_quantity, now_ms)
-            }
+            StaggerMode::Stepped => Self::stepped_releasable(campaign, slot.total_quantity, now_ms),
         }
     }
 

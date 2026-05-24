@@ -18,7 +18,10 @@ pub struct DeviceFingerprint {
     #[serde(rename = "platform", skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
 
-    #[serde(rename = "hardwareConcurrency", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "hardwareConcurrency",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub hardware_concurrency: Option<u32>,
 
     #[serde(rename = "deviceMemory", skip_serializing_if = "Option::is_none")]

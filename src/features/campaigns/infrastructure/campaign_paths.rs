@@ -20,6 +20,9 @@ impl CampaignPaths {
     }
 
     pub fn parent_str(&self, db: &FirestoreDb) -> ApiResult<String> {
-        Ok(self.parent(db).map_err(|e| ApiError::Internal(e.into()))?.to_string())
+        Ok(self
+            .parent(db)
+            .map_err(|e| ApiError::Internal(e.into()))?
+            .to_string())
     }
 }

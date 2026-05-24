@@ -292,10 +292,12 @@ fn claim_tx<'b>(
     token_fingerprint: String,
     now: i64,
     spin_replay_expires_at: i64,
-) -> Pin<Box<dyn Future<Output = Result<FinalizeSpinResult, BackoffError<FirestoreError>>> + Send + 'b>>
-{
+) -> Pin<
+    Box<dyn Future<Output = Result<FinalizeSpinResult, BackoffError<FirestoreError>>> + Send + 'b>,
+> {
     Box::pin(async move {
-        let sub_doc = tx_get_optional(&db, parent.as_str(), SUBMISSIONS_SUBCOL, &session_id).await?;
+        let sub_doc =
+            tx_get_optional(&db, parent.as_str(), SUBMISSIONS_SUBCOL, &session_id).await?;
         let Some(sub) = sub_doc else {
             return Err(BackoffError::Permanent(FirestoreError::DataNotFoundError(
                 FirestoreDataNotFoundError::new(
@@ -316,7 +318,8 @@ fn claim_tx<'b>(
 
         if is_real_prize {
             let slot_id = InventorySlot::slot_key(&location_id, &prize_id);
-            let slot_doc = tx_get_optional(&db, parent.as_str(), INVENTORY_SUBCOL, &slot_id).await?;
+            let slot_doc =
+                tx_get_optional(&db, parent.as_str(), INVENTORY_SUBCOL, &slot_id).await?;
 
             let slot = slot_doc.and_then(map_slot).ok_or_else(|| {
                 BackoffError::Permanent(FirestoreError::InvalidParametersError(
@@ -331,14 +334,14 @@ fn claim_tx<'b>(
 
             let releasable = InventoryService::releasable_now(&campaign, &slot, now);
             if !slot.is_claimable(releasable) {
-                return Err(BackoffError::Permanent(FirestoreError::InvalidParametersError(
-                    FirestoreInvalidParametersError::new(
+                return Err(BackoffError::Permanent(
+                    FirestoreError::InvalidParametersError(FirestoreInvalidParametersError::new(
                         FirestoreInvalidParametersPublicDetails::new(
                             "INVENTORY_EXHAUSTED".to_string(),
                             "code".to_string(),
                         ),
-                    ),
-                )));
+                    )),
+                ));
             }
 
             db.fluent()
@@ -357,14 +360,14 @@ fn claim_tx<'b>(
         let token_doc =
             tx_get_optional(&db, parent.as_str(), SPIN_TOKENS_SUBCOL, &token_fingerprint).await?;
         if token_doc.is_some() {
-            return Err(BackoffError::Permanent(FirestoreError::InvalidParametersError(
-                FirestoreInvalidParametersError::new(
+            return Err(BackoffError::Permanent(
+                FirestoreError::InvalidParametersError(FirestoreInvalidParametersError::new(
                     FirestoreInvalidParametersPublicDetails::new(
                         "SPIN_TOKEN_ALREADY_USED".to_string(),
                         "code".to_string(),
                     ),
-                ),
-            )));
+                )),
+            ));
         }
 
         db.fluent()

@@ -27,9 +27,11 @@ pub fn value_to_iso(value: &Value) -> Option<String> {
         }
         Value::Object(obj) if obj.contains_key("_seconds") => {
             let secs = obj.get("_seconds")?.as_i64()?;
-            let nanos = obj.get("_nanoseconds").and_then(|n| n.as_i64()).unwrap_or(0);
-            chrono::DateTime::from_timestamp(secs, (nanos * 1000) as u32)
-                .map(|dt| dt.to_rfc3339())
+            let nanos = obj
+                .get("_nanoseconds")
+                .and_then(|n| n.as_i64())
+                .unwrap_or(0);
+            chrono::DateTime::from_timestamp(secs, (nanos * 1000) as u32).map(|dt| dt.to_rfc3339())
         }
         _ => None,
     }
@@ -47,7 +49,10 @@ pub fn millis_from_value(value: &Value) -> Option<i64> {
             .map(|dt| dt.timestamp_millis()),
         Value::Object(obj) if obj.contains_key("_seconds") => {
             let secs = obj.get("_seconds")?.as_i64()?;
-            let nanos = obj.get("_nanoseconds").and_then(|n| n.as_i64()).unwrap_or(0);
+            let nanos = obj
+                .get("_nanoseconds")
+                .and_then(|n| n.as_i64())
+                .unwrap_or(0);
             Some(secs * 1000 + nanos / 1_000_000)
         }
         _ => None,
@@ -82,9 +87,7 @@ pub fn document_ref_from_row(
     row.get("__name__")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .or_else(|| {
-            document_id_from_map(row).map(|id| document_ref_path(parent, subcol, &id))
-        })
+        .or_else(|| document_id_from_map(row).map(|id| document_ref_path(parent, subcol, &id)))
 }
 
 fn firestore_integer(v: i64) -> FirestoreValue {
@@ -134,9 +137,8 @@ pub fn start_after_cursor(
     cursor: &Map<String, Value>,
     timestamp_field: &str,
 ) -> ApiResult<FirestoreQueryCursor> {
-    let (ts, name) = parse_page_cursor(cursor, timestamp_field).ok_or_else(|| {
-        ApiError::bad_request("Invalid pagination cursor.")
-    })?;
+    let (ts, name) = parse_page_cursor(cursor, timestamp_field)
+        .ok_or_else(|| ApiError::bad_request("Invalid pagination cursor."))?;
     Ok(FirestoreQueryCursor::AfterValue(pagination_cursor_values(
         ts, &name,
     )))

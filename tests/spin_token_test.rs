@@ -47,11 +47,7 @@ fn rejects_expired_spin_token() {
     let token = sign_spin_payload(&config.spin_token_secret, "campaign-1", "session-123", 0);
     let err = verify_spin_token(&config, &token).unwrap_err();
     match err {
-        ApiError::WithStatus {
-            status,
-            code,
-            ..
-        } => {
+        ApiError::WithStatus { status, code, .. } => {
             assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
             assert_eq!(code.as_deref(), Some("SPIN_TOKEN_EXPIRED"));
         }

@@ -22,7 +22,10 @@ fn vercel_routes() -> Router {
         .route("/locations", get(|| async { "locations" }))
         .route("/inventory", get(|| async { "inventory" }))
         .route("/raffles", get(|| async { "raffles" }))
-        .route("/raffles/{raffle_id}/winners", get(|| async { "raffle-winners" }))
+        .route(
+            "/raffles/{raffle_id}/winners",
+            get(|| async { "raffle-winners" }),
+        )
         .route(
             "/raffles/winners/{winner_id}",
             axum::routing::patch(|| async { "raffle-winner-patch" }),
@@ -47,12 +50,18 @@ fn vercel_routes() -> Router {
         .route("/api/auth/session", post(|| async { "auth-session" }))
 }
 
-fn vercel_app() -> impl Service<Request<Body>, Response = axum::response::Response, Error = std::convert::Infallible> + Clone {
+fn vercel_app(
+) -> impl Service<Request<Body>, Response = axum::response::Response, Error = std::convert::Infallible>
+       + Clone {
     from_fn(restore_vercel_path).layer(vercel_routes())
 }
 
 async fn assert_vercel_route(
-    mut app: impl Service<Request<Body>, Response = axum::response::Response, Error = std::convert::Infallible>,
+    mut app: impl Service<
+        Request<Body>,
+        Response = axum::response::Response,
+        Error = std::convert::Infallible,
+    >,
     method: &str,
     original_path: &str,
 ) {
@@ -90,7 +99,12 @@ async fn vercel_restore_reaches_all_route_groups() {
 
     assert_vercel_route(app.clone(), "PUT", "api/campaigns/test3/settings").await;
     assert_vercel_route(app.clone(), "GET", "api/campaigns/test3/questions").await;
-    assert_vercel_route(app.clone(), "GET", "api/campaigns/test3/questions/admin/full").await;
+    assert_vercel_route(
+        app.clone(),
+        "GET",
+        "api/campaigns/test3/questions/admin/full",
+    )
+    .await;
     assert_vercel_route(app.clone(), "GET", "api/campaigns/test3/prizes").await;
     assert_vercel_route(app.clone(), "POST", "api/campaigns/test3/registrations").await;
     assert_vercel_route(app.clone(), "POST", "api/campaigns/test3/submissions").await;

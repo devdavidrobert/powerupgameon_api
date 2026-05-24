@@ -1,7 +1,7 @@
+use crate::features::locations::application::GeoService;
 use crate::features::locations::domain::{
     GeoPoint, GeoValidationResult, IpGeoCrossCheck, IpGeoLookup, Location,
 };
-use crate::features::locations::application::GeoService;
 
 const METERS_PER_KM: f64 = 1000.0;
 
@@ -24,9 +24,7 @@ impl IpGeoService {
                         && !v4.is_link_local()
                         && !v4.is_unspecified()
                 }
-                std::net::IpAddr::V6(v6) => {
-                    !v6.is_loopback() && !v6.is_unspecified()
-                }
+                std::net::IpAddr::V6(v6) => !v6.is_loopback() && !v6.is_unspecified(),
             };
         }
         false
@@ -111,10 +109,7 @@ mod tests {
         let gps_result = GeoValidationResult::Matched {
             location_id: "nairobi".into(),
         };
-        let ip_lookup = IpGeoLookup::Found(IpGeoPoint {
-            lat: 0.0,
-            lng: 0.0,
-        });
+        let ip_lookup = IpGeoLookup::Found(IpGeoPoint { lat: 0.0, lng: 0.0 });
         assert_eq!(
             IpGeoService::cross_check_gps_and_ip(
                 &gps,

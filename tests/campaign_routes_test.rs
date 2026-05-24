@@ -28,7 +28,10 @@ fn production_style_campaign_routes() -> Router {
 async fn slug_subresources_are_reachable() {
     let app = production_style_campaign_routes();
 
-    for uri in ["/api/campaigns/test/questions", "/api/campaigns/test/settings"] {
+    for uri in [
+        "/api/campaigns/test/questions",
+        "/api/campaigns/test/settings",
+    ] {
         let response = app
             .clone()
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())

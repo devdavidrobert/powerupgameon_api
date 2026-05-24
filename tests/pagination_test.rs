@@ -20,7 +20,10 @@ fn document_ref_path_includes_parent_and_subcollection() {
 fn pagination_cursor_round_trips_timestamp_and_name() {
     let parent = "projects/p/databases/(default)/documents/campaigns/c1";
     let mut row = serde_json::Map::new();
-    row.insert("registeredAt".into(), serde_json::json!(1_700_000_000_000_i64));
+    row.insert(
+        "registeredAt".into(),
+        serde_json::json!(1_700_000_000_000_i64),
+    );
     row.insert(
         "__name__".into(),
         serde_json::json!(format!("{parent}/registrations/s1")),

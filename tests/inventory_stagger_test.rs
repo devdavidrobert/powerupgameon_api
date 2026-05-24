@@ -4,7 +4,12 @@ use powerupgameon_api::features::campaigns::domain::{
 use powerupgameon_api::features::inventory::application::InventoryService;
 use powerupgameon_api::features::inventory::domain::InventorySlot;
 
-fn campaign_with_window(start: i64, end: i64, mode: StaggerMode, schedule: Option<Vec<StaggerStep>>) -> Campaign {
+fn campaign_with_window(
+    start: i64,
+    end: i64,
+    mode: StaggerMode,
+    schedule: Option<Vec<StaggerStep>>,
+) -> Campaign {
     Campaign {
         id: "c1".into(),
         slug: "test".into(),

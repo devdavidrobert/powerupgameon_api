@@ -7,8 +7,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::RwLock;
 use std::sync::Arc;
+use std::sync::RwLock;
 use tokio::sync::Mutex;
 
 static HTTP: Lazy<Client> = Lazy::new(Client::new);
@@ -116,7 +116,11 @@ impl FirebaseAuth {
             .context("Unable to find matching JWK for token")
     }
 
-    pub async fn create_session_cookie(&self, id_token: &str, expires_in_ms: u64) -> Result<String> {
+    pub async fn create_session_cookie(
+        &self,
+        id_token: &str,
+        expires_in_ms: u64,
+    ) -> Result<String> {
         let access_token = self.get_access_token().await?;
         let url = format!(
             "https://identitytoolkit.googleapis.com/v1/projects/{}/accounts:sessionCookie",
@@ -305,9 +309,8 @@ impl FirebaseAuth {
             scope: "https://www.googleapis.com/auth/identitytoolkit https://www.googleapis.com/auth/firebase.database https://www.googleapis.com/auth/cloud-platform",
         };
 
-        let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(
-            self.service_account.private_key.as_bytes(),
-        )?;
+        let encoding_key =
+            jsonwebtoken::EncodingKey::from_rsa_pem(self.service_account.private_key.as_bytes())?;
         encode(&Header::new(Algorithm::RS256), &claims, &encoding_key)
             .context("Failed to sign service account JWT")
     }

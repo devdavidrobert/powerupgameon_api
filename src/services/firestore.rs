@@ -1,6 +1,8 @@
 use crate::config::Config;
 use anyhow::{bail, Context, Result};
-use firestore::{FirestoreDb, FirestoreDbOptions, FirestoreSimpleBatchWriteOptions, FirestoreSimpleBatchWriter};
+use firestore::{
+    FirestoreDb, FirestoreDbOptions, FirestoreSimpleBatchWriteOptions, FirestoreSimpleBatchWriter,
+};
 use gcloud_sdk::{TokenSourceType, GCP_DEFAULT_SCOPES};
 use std::sync::Arc;
 
@@ -24,8 +26,8 @@ impl FirestoreService {
             bail!("Set FIREBASE_SERVICE_ACCOUNT_JSON to the full service account JSON as a single-line string for local development.");
         }
 
-        let service_account: serde_json::Value =
-            serde_json::from_str(json).context("FIREBASE_SERVICE_ACCOUNT_JSON must be valid JSON.")?;
+        let service_account: serde_json::Value = serde_json::from_str(json)
+            .context("FIREBASE_SERVICE_ACCOUNT_JSON must be valid JSON.")?;
 
         let project_id = config.project_id(service_account["project_id"].as_str())?;
 

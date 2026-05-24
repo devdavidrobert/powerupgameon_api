@@ -2,11 +2,11 @@ use powerupgameon_api::features::campaigns::domain::{
     Campaign, CampaignStatus, GeoEnforcement, StaggerMode,
 };
 use powerupgameon_api::features::inventory::domain::InventorySlot;
-use powerupgameon_api::features::spin::application::{
-    SpinService, CONSOLATION_BIAS_FACTOR, MAX_CLAIM_RETRIES, MIN_REAL_WEIGHT, REAL_BIAS_FACTOR,
-};
 use powerupgameon_api::features::spin::application::spin_service::{
     LocationPoolSnapshot, SchedulePressureMetrics,
+};
+use powerupgameon_api::features::spin::application::{
+    SpinService, CONSOLATION_BIAS_FACTOR, MAX_CLAIM_RETRIES, MIN_REAL_WEIGHT, REAL_BIAS_FACTOR,
 };
 use powerupgameon_api::features::spin::domain::{
     has_consolation_prize, is_consolation_prize, partition_spin_pool, pick_wheel_fallback,
@@ -107,7 +107,10 @@ fn partition_is_location_scoped_via_slot_map() {
 
 #[test]
 fn has_consolation_prize_detects_flagged_entries() {
-    let prizes = vec![prize("Steam Can", "p1", 1, true), prize("Try Again", "p2", 2, false)];
+    let prizes = vec![
+        prize("Steam Can", "p1", 1, true),
+        prize("Try Again", "p2", 2, false),
+    ];
     assert!(has_consolation_prize(&prizes));
 }
 
@@ -123,12 +126,12 @@ fn consolation_requires_explicit_flag() {
 
 #[test]
 fn pick_wheel_fallback_uses_last_prize_when_no_consolation() {
-    let prizes = vec![prize("Steam Can", "p1", 1, true), prize("Merch", "p2", 2, true)];
+    let prizes = vec![
+        prize("Steam Can", "p1", 1, true),
+        prize("Merch", "p2", 2, true),
+    ];
     let picked = pick_wheel_fallback(&prizes).expect("fallback");
-    assert_eq!(
-        picked.0.get("name").and_then(|v| v.as_str()),
-        Some("Merch")
-    );
+    assert_eq!(picked.0.get("name").and_then(|v| v.as_str()), Some("Merch"));
 }
 
 #[test]
@@ -149,7 +152,10 @@ fn schedule_pressure_favors_real_when_behind_schedule() {
         now,
     );
 
-    assert!(metrics.deficit > 0.0, "mid-campaign with zero awards should be behind");
+    assert!(
+        metrics.deficit > 0.0,
+        "mid-campaign with zero awards should be behind"
+    );
     assert!(
         metrics.real_weight > metrics.consolation_weight,
         "behind schedule should favor real wins"
@@ -174,7 +180,10 @@ fn schedule_pressure_favors_consolation_when_ahead_of_schedule() {
         now,
     );
 
-    assert!(metrics.deficit < 0.0, "early campaign with most awards should be ahead");
+    assert!(
+        metrics.deficit < 0.0,
+        "early campaign with most awards should be ahead"
+    );
     assert!(
         metrics.consolation_weight > 1.0,
         "ahead of schedule should increase consolation weight"
@@ -251,13 +260,8 @@ fn build_location_pool_snapshot_uses_only_passed_slots() {
     let slot_map = HashMap::from([("p1".into(), slot("loc-a", "p1", 3, 0))]);
     let excluded = HashSet::new();
 
-    let snapshot = SpinService::build_location_pool_snapshot(
-        &campaign,
-        &slot_map,
-        &prizes,
-        500,
-        &excluded,
-    );
+    let snapshot =
+        SpinService::build_location_pool_snapshot(&campaign, &slot_map, &prizes, 500, &excluded);
 
     assert_eq!(snapshot.real_claimable.len(), 1);
     assert_eq!(snapshot.consolation.len(), 1);

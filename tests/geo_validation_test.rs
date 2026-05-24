@@ -81,18 +81,13 @@ fn gps_inside_ip_outside_is_mismatch() {
     let gps_result = GeoValidationResult::Matched {
         location_id: "nairobi".into(),
     };
-    let ip_lookup = IpGeoLookup::Found(powerupgameon_api::features::locations::domain::IpGeoPoint {
-        lat: 0.0,
-        lng: 0.0,
-    });
+    let ip_lookup =
+        IpGeoLookup::Found(powerupgameon_api::features::locations::domain::IpGeoPoint {
+            lat: 0.0,
+            lng: 0.0,
+        });
     assert_eq!(
-        IpGeoService::cross_check_gps_and_ip(
-            &gps,
-            &gps_result,
-            ip_lookup,
-            &[nairobi_cbd()],
-            150.0,
-        ),
+        IpGeoService::cross_check_gps_and_ip(&gps, &gps_result, ip_lookup, &[nairobi_cbd()], 150.0,),
         IpGeoCrossCheck::Mismatch
     );
 }
@@ -106,18 +101,13 @@ fn gps_and_ip_nearby_passes() {
     let gps_result = GeoValidationResult::Matched {
         location_id: "nairobi".into(),
     };
-    let ip_lookup = IpGeoLookup::Found(powerupgameon_api::features::locations::domain::IpGeoPoint {
-        lat: -1.2865,
-        lng: 36.8173,
-    });
+    let ip_lookup =
+        IpGeoLookup::Found(powerupgameon_api::features::locations::domain::IpGeoPoint {
+            lat: -1.2865,
+            lng: 36.8173,
+        });
     assert_eq!(
-        IpGeoService::cross_check_gps_and_ip(
-            &gps,
-            &gps_result,
-            ip_lookup,
-            &[nairobi_cbd()],
-            150.0,
-        ),
+        IpGeoService::cross_check_gps_and_ip(&gps, &gps_result, ip_lookup, &[nairobi_cbd()], 150.0,),
         IpGeoCrossCheck::Pass
     );
 }

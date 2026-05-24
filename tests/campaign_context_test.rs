@@ -1,6 +1,8 @@
-use powerupgameon_api::features::campaigns::presentation::{extract_slug_from_path, resolve_campaign_slug};
-use powerupgameon_api::error::ApiError;
 use axum::http::HeaderMap;
+use powerupgameon_api::error::ApiError;
+use powerupgameon_api::features::campaigns::presentation::{
+    extract_slug_from_path, resolve_campaign_slug,
+};
 
 #[test]
 fn slug_extraction_from_nested_paths() {
@@ -14,7 +16,9 @@ fn slug_extraction_from_nested_paths() {
     );
 }
 
-use powerupgameon_api::features::campaigns::domain::{Campaign, CampaignStatus, GeoEnforcement, StaggerMode};
+use powerupgameon_api::features::campaigns::domain::{
+    Campaign, CampaignStatus, GeoEnforcement, StaggerMode,
+};
 
 #[test]
 fn draft_campaign_is_not_publicly_accessible() {

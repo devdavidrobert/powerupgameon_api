@@ -49,10 +49,7 @@ async fn request_context_middleware_echoes_valid_request_id() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("X-Request-Id").unwrap(),
-        "trace-123"
-    );
+    assert_eq!(response.headers().get("X-Request-Id").unwrap(), "trace-123");
 }
 
 #[tokio::test]

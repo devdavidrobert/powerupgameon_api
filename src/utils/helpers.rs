@@ -2,28 +2,30 @@ use crate::error::{ApiError, ApiResult};
 use rand::Rng;
 use serde_json::{Map, Value};
 
-pub fn submission_identity_from_registration(reg: &Map<String, Value>) -> ApiResult<(String, String)> {
+pub fn submission_identity_from_registration(
+    reg: &Map<String, Value>,
+) -> ApiResult<(String, String)> {
     let full_name = reg
         .get("fullName")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ApiError::bad_request("Registration is missing a valid fullName.")
-        })?;
+        .ok_or_else(|| ApiError::bad_request("Registration is missing a valid fullName."))?;
     let normalized_name = reg
         .get("normalizedName")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ApiError::bad_request("Registration is missing a valid normalizedName.")
-        })?;
+        .ok_or_else(|| ApiError::bad_request("Registration is missing a valid normalizedName."))?;
     Ok((full_name.to_string(), normalized_name.to_string()))
 }
 
 pub fn normalize_name(name: &str) -> String {
-    name.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    name.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn fisher_yates_shuffle<T>(mut array: Vec<T>) -> Vec<T> {

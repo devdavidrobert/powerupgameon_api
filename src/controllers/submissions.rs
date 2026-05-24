@@ -1,9 +1,9 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::{CampaignContext, PublicCampaignContext};
+use crate::features::locations::domain::GeoStatus;
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
-use crate::features::locations::domain::GeoStatus;
 use crate::models::registration::RegistrationModel;
 use crate::models::submission::{SubmissionCreateInput, SubmissionModel};
 use crate::utils::client_ip::{get_client_ip, ClientPeer};
@@ -225,7 +225,12 @@ pub async fn delete_submission(
 }
 
 fn map_create_error(err: ApiError, ctx: &RequestContext) -> ApiError {
-    if let ApiError::WithStatus { code: Some(code), message, .. } = &err {
+    if let ApiError::WithStatus {
+        code: Some(code),
+        message,
+        ..
+    } = &err
+    {
         if matches!(
             code.as_str(),
             "NO_SESSION" | "INVALID_ANSWERS_LENGTH" | "INVALID_ANSWER_INDEX"

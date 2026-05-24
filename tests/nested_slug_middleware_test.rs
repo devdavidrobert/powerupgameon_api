@@ -14,11 +14,7 @@ struct SlugPath {
     slug: String,
 }
 
-async fn inject_slug(
-    Path(slug_path): Path<SlugPath>,
-    mut req: Request,
-    next: Next,
-) -> Response {
+async fn inject_slug(Path(slug_path): Path<SlugPath>, mut req: Request, next: Next) -> Response {
     req.extensions_mut().insert(slug_path.slug);
     next.run(req).await
 }

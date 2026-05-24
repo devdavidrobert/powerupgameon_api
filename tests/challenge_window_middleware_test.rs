@@ -75,12 +75,7 @@ async fn require_challenge_open_blocks_closed_campaign_requests() {
         .layer(middleware::from_fn(inject_closed_campaign));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/play")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/play").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -100,12 +95,7 @@ async fn require_challenge_open_returns_start_time_when_not_started() {
         .layer(middleware::from_fn(inject_not_started_campaign));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/play")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/play").body(Body::empty()).unwrap())
         .await
         .unwrap();
 

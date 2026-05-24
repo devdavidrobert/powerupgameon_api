@@ -78,8 +78,8 @@ impl SpinService {
         let schedule_pressure = total_awarded as f64 / total_releasable_budget.max(1) as f64;
         let deficit = campaign_elapsed - schedule_pressure;
 
-        let real_weight = (total_remaining as f64 * (1.0 + deficit * REAL_BIAS_FACTOR))
-            .max(MIN_REAL_WEIGHT);
+        let real_weight =
+            (total_remaining as f64 * (1.0 + deficit * REAL_BIAS_FACTOR)).max(MIN_REAL_WEIGHT);
         let consolation_weight = 1.0 + (-deficit).max(0.0) * CONSOLATION_BIAS_FACTOR;
 
         SchedulePressureMetrics {
@@ -176,10 +176,8 @@ impl SpinService {
         let slots = InventoryRepository::find_by_location(state, paths, location_id).await?;
         let now = chrono::Utc::now().timestamp_millis();
 
-        let slot_by_prize: HashMap<String, InventorySlot> = slots
-            .into_iter()
-            .map(|s| (s.prize_id.clone(), s))
-            .collect();
+        let slot_by_prize: HashMap<String, InventorySlot> =
+            slots.into_iter().map(|s| (s.prize_id.clone(), s)).collect();
 
         Ok(Self::build_location_pool_snapshot(
             campaign,
@@ -254,12 +252,10 @@ impl SpinService {
             }
             Ok(result) => {
                 if let Some(prev_name) = result.previous_prize {
-                    let prev = sorted
-                        .iter()
-                        .find(|p| p.get("name").and_then(|v| v.as_str()) == Some(prev_name.as_str()));
-                    let prev_id = prev
-                        .and_then(prize_id_from_map)
-                        .unwrap_or_default();
+                    let prev = sorted.iter().find(|p| {
+                        p.get("name").and_then(|v| v.as_str()) == Some(prev_name.as_str())
+                    });
+                    let prev_id = prev.and_then(prize_id_from_map).unwrap_or_default();
                     let prev_order = prev
                         .and_then(|p| p.get("order").and_then(|v| v.as_i64()))
                         .unwrap_or(order);

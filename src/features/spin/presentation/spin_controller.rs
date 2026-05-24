@@ -82,9 +82,7 @@ pub async fn spin_wheel(
         let won = prizes
             .iter()
             .find(|p| p.get("name").and_then(|v| v.as_str()) == Some(prize_name));
-        let prize_id = won
-            .and_then(prize_id_from_map)
-            .unwrap_or_default();
+        let prize_id = won.and_then(prize_id_from_map).unwrap_or_default();
         let order = won
             .and_then(|p| p.get("order").and_then(|v| v.as_i64()))
             .unwrap_or(0);
@@ -149,10 +147,8 @@ pub async fn spin_wheel(
     sorted.sort_by_key(|p| p.get("order").and_then(|v| v.as_i64()).unwrap_or(0));
 
     let slots = InventoryRepository::find_by_location(&state, &ctx.paths, &location_id).await?;
-    let slot_by_prize: HashMap<String, InventorySlot> = slots
-        .into_iter()
-        .map(|s| (s.prize_id.clone(), s))
-        .collect();
+    let slot_by_prize: HashMap<String, InventorySlot> =
+        slots.into_iter().map(|s| (s.prize_id.clone(), s)).collect();
     let now = chrono::Utc::now().timestamp_millis();
 
     let mut excluded_real_ids: HashSet<String> = HashSet::new();
@@ -200,7 +196,9 @@ pub async fn spin_wheel(
                 log_spin_slow(&state, &req_ctx, started);
                 return Ok(response);
             }
-            Err(ApiError::WithStatus { code: Some(code), .. }) if code == "INVENTORY_EXHAUSTED" => {
+            Err(ApiError::WithStatus {
+                code: Some(code), ..
+            }) if code == "INVENTORY_EXHAUSTED" => {
                 if is_real {
                     excluded_real_ids.insert(entry.1);
                     snapshot = SpinService::build_location_pool_snapshot(
@@ -214,7 +212,9 @@ pub async fn spin_wheel(
                 last_error = ApiError::bad_request("Prize inventory exhausted.");
                 continue;
             }
-            Err(ApiError::WithStatus { code: Some(code), .. }) if code == "SPIN_TOKEN_ALREADY_USED" => {
+            Err(ApiError::WithStatus {
+                code: Some(code), ..
+            }) if code == "SPIN_TOKEN_ALREADY_USED" => {
                 logger::log(
                     &state.config,
                     "warn",

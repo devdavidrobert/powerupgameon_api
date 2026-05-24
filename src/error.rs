@@ -41,7 +41,11 @@ impl ApiError {
         }
     }
 
-    pub fn with_code(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn with_code(
+        status: StatusCode,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self::WithStatus {
             status,
             message: message.into(),
@@ -144,9 +148,9 @@ pub struct SuccessResponse<T: Serialize> {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "hasMore", skip_serializing_if = "Option::is_none")]
     pub has_more: Option<bool>,
 }
 

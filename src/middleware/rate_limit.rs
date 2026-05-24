@@ -188,16 +188,12 @@ pub async fn spin_rate_limit_middleware(
     let (parts, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, SPIN_BODY_LIMIT).await {
         Ok(bytes) => bytes,
-        Err(_) => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "Unable to read spin request body.",
-            )
-        }
+        Err(_) => return json_error(StatusCode::BAD_REQUEST, "Unable to read spin request body."),
     };
     let key = spin_rate_limit_key(&state.config, &ip, &bytes);
     if let Err(resp) = check_rate_limit(&state, &key, &SPIN_RULE).await {
         return resp;
     }
-    next.run(Request::from_parts(parts, Body::from(bytes))).await
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
 }

@@ -112,7 +112,11 @@ fn campaign_required_error() -> ApiError {
     )
 }
 
-pub fn resolve_campaign_slug(path: &str, query: Option<&str>, headers: &HeaderMap) -> ApiResult<String> {
+pub fn resolve_campaign_slug(
+    path: &str,
+    query: Option<&str>,
+    headers: &HeaderMap,
+) -> ApiResult<String> {
     if let Ok(slug) = extract_slug_from_path(path) {
         return Ok(slug);
     }

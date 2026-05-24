@@ -26,17 +26,14 @@ pub async fn request_context_middleware(mut req: Request<Body>, next: Next) -> R
             .and_then(|v| v.to_str().ok()),
     );
 
-    req.extensions_mut()
-        .insert(RequestContext {
-            request_id: request_id.clone(),
-        });
+    req.extensions_mut().insert(RequestContext {
+        request_id: request_id.clone(),
+    });
 
     let start = std::time::Instant::now();
     let mut response = next.run(req).await;
     if let Ok(header_value) = HeaderValue::from_str(&request_id) {
-        response
-            .headers_mut()
-            .insert("X-Request-Id", header_value);
+        response.headers_mut().insert("X-Request-Id", header_value);
     }
 
     let duration_ms = start.elapsed().as_millis();
