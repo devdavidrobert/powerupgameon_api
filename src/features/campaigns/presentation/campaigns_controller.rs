@@ -8,6 +8,7 @@ use crate::features::campaigns::infrastructure::{
     CampaignUpdateInput,
 };
 use crate::features::campaigns::presentation::campaign_context::{CampaignContext, SlugPath};
+use crate::features::locations::infrastructure::LocationRepository;
 use crate::models::question::QuestionModel;
 use axum::{
     extract::{Path, State},
@@ -167,9 +168,12 @@ pub async fn archive_campaign(
 }
 
 pub async fn get_campaign_settings(
+    State(state): State<Arc<AppState>>,
     ctx: PublicCampaignContext,
 ) -> ApiResult<(axum::http::HeaderMap, Json<SuccessResponse<Value>>)> {
     let PublicCampaignContext(ctx) = ctx;
+    let has_geofence_locations =
+        LocationRepository::has_enabled_locations(&state, &ctx.paths).await?;
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
         axum::http::header::CACHE_CONTROL,
@@ -185,14 +189,18 @@ pub async fn get_campaign_settings(
             "spinPassPercent": ctx.campaign.spin_pass_percent(),
             "brandLogos": ctx.campaign.sorted_brand_logos(),
             "playerOutcomeCopy": ctx.campaign.player_outcome_copy_or_default(),
+            "hasGeofenceLocations": has_geofence_locations,
             "updatedAt": ctx.campaign.updated_at,
         })),
     ))
 }
 
 pub async fn get_campaign_settings_admin(
+    State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
+    let has_geofence_locations =
+        LocationRepository::has_enabled_locations(&state, &ctx.paths).await?;
     Ok(SuccessResponse::data(json!({
         "challengeStartTime": ctx.campaign.challenge_start_time,
         "challengeEndTime": ctx.campaign.challenge_end_time,
@@ -203,6 +211,7 @@ pub async fn get_campaign_settings_admin(
         "spinPassPercent": ctx.campaign.spin_pass_percent(),
         "brandLogos": ctx.campaign.sorted_brand_logos(),
         "playerOutcomeCopy": ctx.campaign.player_outcome_copy_or_default(),
+        "hasGeofenceLocations": has_geofence_locations,
     })))
 }
 

@@ -39,6 +39,11 @@ impl LocationRepository {
             .collect())
     }
 
+    pub async fn has_enabled_locations(state: &AppState, paths: &CampaignPaths) -> ApiResult<bool> {
+        let locations = Self::find_all(state, paths).await?;
+        Ok(locations.iter().any(|l| l.enabled))
+    }
+
     pub async fn find_by_id(
         state: &AppState,
         paths: &CampaignPaths,

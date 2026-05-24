@@ -1,11 +1,15 @@
 use axum::{
     body::Body,
+    extract::State,
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::get,
     Json, Router,
 };
+use powerupgameon_api::app_state::AppState;
+use powerupgameon_api::config::Config;
+use powerupgameon_api::init_crypto_providers;
 use powerupgameon_api::controllers::prizes::PrizeBody;
 use powerupgameon_api::error::SuccessResponse;
 use powerupgameon_api::features::campaigns::domain::{
@@ -74,15 +78,25 @@ fn prize_body_deserializes_is_real_prize_from_camel_case() {
 }
 
 #[tokio::test]
+#[ignore = "requires live Firestore"]
 async fn admin_settings_full_returns_private_fields_for_draft_campaign() {
-    let Json(res) = get_campaign_settings_admin(campaign_context(CampaignStatus::Draft))
-        .await
-        .unwrap();
+    dotenvy::dotenv().ok();
+    init_crypto_providers().expect("crypto providers");
+    let config = Config::load().expect("config");
+    let state = AppState::new(config).await.expect("app state");
+
+    let Json(res) = get_campaign_settings_admin(
+        State(state),
+        campaign_context(CampaignStatus::Draft),
+    )
+    .await
+    .unwrap();
     let data = serde_json::to_value(res.data.unwrap()).unwrap();
 
     assert_eq!(data["staggerMode"], "stepped");
     assert_eq!(data["geoEnforcement"], "flag");
     assert!(data["staggerSchedule"].is_array());
+    assert!(data.get("hasGeofenceLocations").is_some());
 }
 
 async fn ok_handler() -> &'static str {

@@ -3,9 +3,11 @@ use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::{
     CampaignContext, PublicCampaignContext, SlugIdPath,
 };
+use crate::features::locations::domain::GeoStatus;
+use crate::features::locations::infrastructure::LocationRepository;
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
-use crate::models::registration::{RegistrationInput, RegistrationModel};
+use crate::models::registration::{GeoResolveOutput, RegistrationInput, RegistrationModel};
 use crate::models::submission::SubmissionModel;
 use crate::utils::client_ip::{get_client_ip, ClientPeer};
 use crate::utils::firestore::serialize_doc_data;
@@ -119,18 +121,45 @@ pub async fn register(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::bad_request("sessionId is required."))?;
 
-    let lat = body
-        .lat
-        .ok_or_else(|| ApiError::bad_request("lat is required."))?;
-    let lng = body
-        .lng
-        .ok_or_else(|| ApiError::bad_request("lng is required."))?;
+    let has_geofence_locations =
+        LocationRepository::has_enabled_locations(&state, &ctx.paths).await?;
+    let ip = get_client_ip(&headers, state.config.trust_proxy, peer);
+
+    let (lat, lng, geo_resolve) = if has_geofence_locations {
+        let lat = body
+            .lat
+            .ok_or_else(|| ApiError::bad_request("lat is required."))?;
+        let lng = body
+            .lng
+            .ok_or_else(|| ApiError::bad_request("lng is required."))?;
+        let geo_resolve = RegistrationModel::resolve_geo(
+            &state,
+            &ctx.paths,
+            ctx.campaign.geo_enforcement,
+            lat,
+            lng,
+            &ip,
+        )
+        .await?;
+        (Some(lat), Some(lng), geo_resolve)
+    } else {
+        (
+            None,
+            None,
+            GeoResolveOutput {
+                location_id: None,
+                geo_status: GeoStatus::NoZones,
+                ip_lat: None,
+                ip_lng: None,
+                ip_geo_status: None,
+            },
+        )
+    };
 
     let first = body.first_name.as_ref().unwrap().trim();
     let last = body.last_name.as_ref().unwrap().trim();
     let full_name = format!("{first} {last}");
     let normalized = normalize_name(&full_name);
-    let ip = get_client_ip(&headers, state.config.trust_proxy, peer);
     let user_agent = body
         .user_agent
         .as_deref()
@@ -140,16 +169,6 @@ pub async fn register(
 
     let device_id = body.device_id.clone().filter(|s| !s.trim().is_empty());
     let device_fingerprint = body.device_fingerprint.clone();
-
-    let geo_resolve = RegistrationModel::resolve_geo(
-        &state,
-        &ctx.paths,
-        ctx.campaign.geo_enforcement,
-        lat,
-        lng,
-        &ip,
-    )
-    .await?;
 
     let geo_status = geo_resolve.geo_status;
     let location_id = geo_resolve.location_id.clone();
