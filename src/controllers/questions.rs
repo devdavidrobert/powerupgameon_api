@@ -62,6 +62,7 @@ pub async fn get_question(
 pub struct QuestionBody {
     pub text: Option<String>,
     pub options: Option<Vec<String>>,
+    #[serde(rename = "correctIndex")]
     pub correct_index: Option<i64>,
     pub order: Option<i64>,
 }
@@ -143,4 +144,25 @@ pub async fn delete_question(
     }
     QuestionModel::delete(&state, &ctx.paths, &id).await?;
     Ok(SuccessResponse::message("Question deleted."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn question_body_deserializes_camel_case_correct_index() {
+        let body: QuestionBody = serde_json::from_value(json!({
+            "text": "test3",
+            "options": ["aasa", "asdasd", "asdasdfss", "asdasd"],
+            "correctIndex": 0,
+            "order": 1
+        }))
+        .expect("deserialize");
+
+        assert_eq!(body.text.as_deref(), Some("test3"));
+        assert_eq!(body.options.as_ref().map(|o| o.len()), Some(4));
+        assert_eq!(body.correct_index, Some(0));
+        assert_eq!(body.order, Some(1));
+    }
 }
