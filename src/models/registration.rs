@@ -7,6 +7,8 @@ use crate::features::locations::domain::{
     GeoPoint, GeoStatus, GeoValidationResult, IpGeoCrossCheck, IpGeoLookup,
 };
 use crate::features::locations::infrastructure::{IpApiProvider, LocationRepository};
+use crate::features::uniqueness::application::UniquenessService;
+use crate::features::uniqueness::infrastructure::UniquenessRepository;
 use crate::utils::firestore::millis_now;
 use firestore::errors::{
     BackoffError, FirestoreError, FirestoreInvalidParametersError,
@@ -35,6 +37,10 @@ pub struct RegistrationInput {
     pub ip_lat: Option<f64>,
     pub ip_lng: Option<f64>,
     pub ip_geo_status: Option<String>,
+    /// Stable device identifier from the client (primary anti-dupe signal).
+    pub device_id: Option<String>,
+    /// Raw device fingerprint payload (lightweight signals) for storage and correlation.
+    pub device_fingerprint: Option<serde_json::Value>,
 }
 
 pub struct GeoResolveOutput {
@@ -205,6 +211,8 @@ impl RegistrationModel {
         let ip_lat = input.ip_lat;
         let ip_lng = input.ip_lng;
         let ip_geo_status = input.ip_geo_status.clone();
+        let device_id = input.device_id.clone();
+        let device_fingerprint = input.device_fingerprint.clone();
 
         db.run_transaction(move |db, transaction| {
             register_tx(
@@ -225,6 +233,8 @@ impl RegistrationModel {
                 ip_lat,
                 ip_lng,
                 ip_geo_status.clone(),
+                device_id.clone(),
+                device_fingerprint.clone(),
             )
         })
         .await
@@ -254,6 +264,18 @@ impl RegistrationModel {
             )?;
         }
 
+        // Release the device lock (if present on this registration) so the person
+        // can re-enter after an admin correction (mirrors name_lock cleanup).
+        if let Some(device_id) = reg.get("deviceId").and_then(|v| v.as_str()) {
+            // Best-effort; do not fail the whole delete if the lock row is already gone.
+            let _ = UniquenessRepository::delete_device_lock_in_batch(
+                &state.db.client,
+                &mut batch,
+                parent.as_str(),
+                device_id,
+            );
+        }
+
         batch.write().await.map_err(|e| ApiError::Internal(e.into()))?;
         Ok(())
     }
@@ -277,6 +299,8 @@ fn register_tx<'b>(
     ip_lat: Option<f64>,
     ip_lng: Option<f64>,
     ip_geo_status: Option<String>,
+    device_id: Option<String>,
+    device_fingerprint: Option<serde_json::Value>,
 ) -> Pin<Box<dyn Future<Output = Result<(), BackoffError<FirestoreError>>> + Send + 'b>> {
     Box::pin(async move {
         let name_doc: Option<Map<String, Value>> = db
@@ -319,6 +343,25 @@ fn register_tx<'b>(
             }
         }
 
+        // Device + IP uniqueness hardening (hard block for one entry per person).
+        // Primary key is the stable client-generated deviceId persisted in localStorage.
+        if let Some(ref dev) = device_id {
+            if let Some(existing) = UniquenessRepository::find_device_lock_tx(&db, parent.as_str(), dev)
+                .await?
+            {
+                // Any prior lock for this device in the campaign means the device already participated.
+                // We treat it as used (permanent for the campaign) to enforce "one entry".
+                if existing.get("hasPlayed").and_then(|v| v.as_bool()) == Some(true)
+                    || existing.get("sessionId").is_some()
+                {
+                    return Err(tx_err("DEVICE_ALREADY_USED"));
+                }
+            }
+        }
+
+        // (Future) IP + fingerprint correlation check could live here and return
+        // tx_err("IP_DEVICE_CONFLICT") when policy decides a hard block is warranted.
+
         db.fluent()
             .update()
             .in_col(SESSIONS_SUBCOL)
@@ -329,6 +372,7 @@ fn register_tx<'b>(
                 "sessionId": session_id,
                 "hasPlayed": true,
                 "playedAt": now,
+                "deviceId": device_id,
             }))
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
@@ -346,9 +390,33 @@ fn register_tx<'b>(
                 "ip": ip,
                 "userAgent": user_agent,
                 "registeredAt": now,
+                "deviceId": device_id,
             }))
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
+
+        // Atomically claim the device lock (primary anti-cheat signal).
+        if let Some(ref dev) = device_id {
+            let lock_id = UniquenessService::device_lock_id(dev);
+            db.fluent()
+                .update()
+                .in_col(crate::features::uniqueness::domain::UNIQUENESS_SUBCOL)
+                .document_id(&lock_id)
+                .parent(parent.as_str())
+                .object(&json!({
+                    "kind": "device_lock",
+                    "deviceId": dev,
+                    "sessionId": session_id,
+                    "hasPlayed": true,
+                    "playedAt": now,
+                    "registeredAt": now,
+                    "ip": ip,
+                    "userAgent": user_agent,
+                    "deviceFingerprint": device_fingerprint,
+                }))
+                .add_to_transaction(transaction)
+                .map_err(BackoffError::Permanent)?;
+        }
 
         db.fluent()
             .update()
@@ -370,6 +438,8 @@ fn register_tx<'b>(
                 "ipLat": ip_lat,
                 "ipLng": ip_lng,
                 "ipGeoStatus": ip_geo_status,
+                "deviceId": device_id,
+                "deviceFingerprint": device_fingerprint,
             }))
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
@@ -419,6 +489,22 @@ fn map_registration_error(err: FirestoreError) -> ApiError {
             status: axum::http::StatusCode::CONFLICT,
             message: "You have already played. Please try again next time!".into(),
             code: Some("SESSION_COOLDOWN".into()),
+            data: None,
+        };
+    }
+    if msg.contains("DEVICE_ALREADY_USED") {
+        return ApiError::WithStatus {
+            status: axum::http::StatusCode::CONFLICT,
+            message: "This device has already participated in the challenge. One entry per person.".into(),
+            code: Some("DEVICE_ALREADY_USED".into()),
+            data: None,
+        };
+    }
+    if msg.contains("IP_DEVICE_CONFLICT") {
+        return ApiError::WithStatus {
+            status: axum::http::StatusCode::CONFLICT,
+            message: "Device and location signals indicate this entry is a duplicate. One entry per person.".into(),
+            code: Some("IP_DEVICE_CONFLICT".into()),
             data: None,
         };
     }

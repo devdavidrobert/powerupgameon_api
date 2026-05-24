@@ -33,6 +33,10 @@ pub struct RegisterBody {
     pub session_id: Option<String>,
     #[serde(rename = "userAgent")]
     pub user_agent: Option<String>,
+    #[serde(rename = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(rename = "deviceFingerprint")]
+    pub device_fingerprint: Option<serde_json::Value>,
     pub lat: Option<f64>,
     pub lng: Option<f64>,
 }
@@ -125,6 +129,9 @@ pub async fn register(
         .unwrap_or("unknown")
         .to_string();
 
+    let device_id = body.device_id.clone().filter(|s| !s.trim().is_empty());
+    let device_fingerprint = body.device_fingerprint.clone();
+
     let geo_resolve = RegistrationModel::resolve_geo(
         &state,
         &ctx.paths,
@@ -151,6 +158,8 @@ pub async fn register(
             ip_lat: geo_resolve.ip_lat,
             ip_lng: geo_resolve.ip_lng,
             ip_geo_status: geo_resolve.ip_geo_status,
+            device_id,
+            device_fingerprint,
         },
     )
     .await
@@ -164,6 +173,10 @@ pub async fn register(
                         "The name \"{full_name}\" has already been registered. One entry per person."
                     ),
                 );
+            }
+            if code == "DEVICE_ALREADY_USED" || code == "IP_DEVICE_CONFLICT" {
+                // The model mapper already produced a good message + code; just ensure 409.
+                return e;
             }
         }
         e
