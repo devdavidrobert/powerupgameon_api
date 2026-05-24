@@ -18,6 +18,10 @@ struct Args {
     name: String,
 }
 
+/// Each migrated doc adds 2 batch ops (copy to campaign subcollection + delete root doc).
+/// Firestore WriteBatch limit is 500 ops, so flush every 250 documents.
+const MIGRATE_BATCH_FLUSH_EVERY: usize = 250;
+
 const ROOT_COLLECTIONS: &[&str] = &[
     "questions",
     "prizes",
@@ -185,7 +189,7 @@ async fn migrate_collection(
             .with_context(|| format!("delete root {collection}/{id}"))?;
 
         count += 1;
-        if count % 400 == 0 {
+        if count % MIGRATE_BATCH_FLUSH_EVERY == 0 {
             batch.write().await?;
             batch = writer.new_batch();
         }
