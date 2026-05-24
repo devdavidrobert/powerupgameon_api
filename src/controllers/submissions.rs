@@ -5,7 +5,6 @@ use crate::logger;
 use crate::middleware::request_context::RequestContext;
 use crate::models::registration::RegistrationModel;
 use crate::models::submission::{SubmissionCreateInput, SubmissionModel};
-use crate::utils::challenge_window::assert_challenge_open_for_campaign;
 use crate::utils::client_ip::get_client_ip;
 use crate::utils::firestore::serialize_doc_data;
 use crate::utils::helpers::{decode_cursor, encode_cursor, submission_identity_from_registration};
@@ -118,8 +117,6 @@ pub async fn create_submission(
         };
         sanitized.push(n);
     }
-
-    assert_challenge_open_for_campaign(&ctx.campaign)?;
 
     let registration = RegistrationModel::find_by_id(&state, &ctx.paths, session_id)
         .await?

@@ -5,7 +5,6 @@ use crate::logger;
 use crate::middleware::request_context::RequestContext;
 use crate::models::registration::{RegistrationInput, RegistrationModel};
 use crate::models::submission::SubmissionModel;
-use crate::utils::challenge_window::assert_challenge_open_for_campaign;
 use crate::utils::client_ip::get_client_ip;
 use crate::utils::firestore::serialize_doc_data;
 use crate::utils::helpers::{decode_cursor, encode_cursor, normalize_name};
@@ -113,8 +112,6 @@ pub async fn register(
     let lng = body
         .lng
         .ok_or_else(|| ApiError::bad_request("lng is required."))?;
-
-    assert_challenge_open_for_campaign(&ctx.campaign)?;
 
     let first = body.first_name.as_ref().unwrap().trim();
     let last = body.last_name.as_ref().unwrap().trim();

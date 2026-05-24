@@ -8,7 +8,6 @@ use crate::middleware::request_context::RequestContext;
 use crate::models::prize::PrizeModel;
 use crate::models::registration::RegistrationModel;
 use crate::models::submission::SubmissionModel;
-use crate::utils::challenge_window::assert_challenge_open_for_campaign;
 use crate::utils::spin_token::verify_spin_token;
 use axum::{extract::State, Extension, Json};
 use rand::Rng;
@@ -33,8 +32,6 @@ pub async fn spin_wheel(
     Extension(req_ctx): Extension<RequestContext>,
     Json(body): Json<SpinBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    assert_challenge_open_for_campaign(&ctx.campaign)?;
-
     let spin_token = body
         .spin_token
         .as_deref()

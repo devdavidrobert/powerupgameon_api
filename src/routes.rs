@@ -13,6 +13,7 @@ use crate::features::locations::presentation::{
 };
 use crate::middleware::auth::{authenticate_middleware, require_admin_middleware};
 use crate::middleware::campaign_context::inject_campaign_context;
+use crate::middleware::challenge_window::require_challenge_open_middleware;
 use crate::middleware::csrf::{mint_csrf_token, require_csrf_middleware};
 use crate::middleware::rate_limit::{
     global_rate_limit_middleware, registration_rate_limit_middleware,
@@ -40,6 +41,10 @@ fn with_admin(state: Arc<AppState>, router: Router<Arc<AppState>>) -> Router<Arc
             require_admin_middleware,
         ))
         .layer(middleware::from_fn_with_state(state, authenticate_middleware))
+}
+
+fn with_challenge_open(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router.layer(middleware::from_fn(require_challenge_open_middleware))
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -71,73 +76,75 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     let admin = state.clone();
 
-    let api_questions = Router::new()
-        .route("/", get(questions::get_all_questions))
-        .route("/{id}", get(questions::get_question))
-        .merge(with_admin(
-            admin.clone(),
-            Router::new()
-                .route("/admin/full", get(questions::get_all_questions_admin))
-                .route("/", post(questions::create_question))
-                .route(
-                    "/{id}",
-                    put(questions::update_question).delete(questions::delete_question),
-                ),
-        ));
+    let api_questions = with_challenge_open(
+        Router::new()
+            .route("/", get(questions::get_all_questions))
+            .route("/{id}", get(questions::get_question)),
+    )
+    .merge(with_admin(
+        admin.clone(),
+        Router::new()
+            .route("/admin/full", get(questions::get_all_questions_admin))
+            .route("/", post(questions::create_question))
+            .route(
+                "/{id}",
+                put(questions::update_question).delete(questions::delete_question),
+            ),
+    ));
 
-    let api_prizes = Router::new()
-        .route("/", get(prizes::get_all_prizes))
-        .route("/{id}", get(prizes::get_prize))
-        .merge(with_admin(
-            admin.clone(),
-            Router::new()
-                .route("/", post(prizes::create_prize))
-                .route(
-                    "/{id}",
-                    put(prizes::update_prize).delete(prizes::delete_prize),
-                ),
-        ));
+    let api_prizes = with_challenge_open(
+        Router::new()
+            .route("/", get(prizes::get_all_prizes))
+            .route("/{id}", get(prizes::get_prize)),
+    )
+    .merge(with_admin(
+        admin.clone(),
+        Router::new()
+            .route("/", post(prizes::create_prize))
+            .route(
+                "/{id}",
+                put(prizes::update_prize).delete(prizes::delete_prize),
+            ),
+    ));
 
-    let api_registrations = Router::new()
-        .route(
-            "/",
-            post(registrations::register).layer(middleware::from_fn_with_state(
-                state.clone(),
-                registration_rate_limit_middleware,
-            )),
-        )
-        .merge(with_admin(
-            admin.clone(),
-            Router::new()
-                .route("/", get(registrations::get_all_registrations))
-                .route("/{id}", delete(registrations::delete_registration)),
-        ));
+    let api_registrations = with_challenge_open(Router::new().route(
+        "/",
+        post(registrations::register).layer(middleware::from_fn_with_state(
+            state.clone(),
+            registration_rate_limit_middleware,
+        )),
+    ))
+    .merge(with_admin(
+        admin.clone(),
+        Router::new()
+            .route("/", get(registrations::get_all_registrations))
+            .route("/{id}", delete(registrations::delete_registration)),
+    ));
 
-    let api_submissions = Router::new()
-        .route(
-            "/",
-            post(submissions::create_submission).layer(middleware::from_fn_with_state(
-                state.clone(),
-                submission_rate_limit_middleware,
-            )),
-        )
-        .merge(with_admin(
-            admin.clone(),
-            Router::new()
-                .route("/", get(submissions::get_all_submissions))
-                .route(
-                    "/{id}",
-                    get(submissions::get_submission).delete(submissions::delete_submission),
-                ),
-        ));
+    let api_submissions = with_challenge_open(Router::new().route(
+        "/",
+        post(submissions::create_submission).layer(middleware::from_fn_with_state(
+            state.clone(),
+            submission_rate_limit_middleware,
+        )),
+    ))
+    .merge(with_admin(
+        admin.clone(),
+        Router::new()
+            .route("/", get(submissions::get_all_submissions))
+            .route(
+                "/{id}",
+                get(submissions::get_submission).delete(submissions::delete_submission),
+            ),
+    ));
 
-    let api_spin = Router::new().route(
+    let api_spin = with_challenge_open(Router::new().route(
         "/",
         post(spin::spin_wheel).layer(middleware::from_fn_with_state(
             state.clone(),
             spin_rate_limit_middleware,
         )),
-    );
+    ));
 
     let api_settings = Router::new()
         .route("/", get(get_campaign_settings))
