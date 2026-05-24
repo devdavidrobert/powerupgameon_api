@@ -40,6 +40,37 @@ pub struct UpdateCampaignBody {
     pub geo_enforcement: Option<String>,
 }
 
+fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) -> ApiResult<()> {
+    if let Some(name) = body.name {
+        input.name = Some(name);
+    }
+    if let Some(status) = body.status {
+        input.status = Some(CampaignStatus::from_str(&status));
+    }
+    if let Some(start) = body.challenge_start_time.as_ref() {
+        input.challenge_start_time = Some(parse_challenge_time_value(start)?);
+    }
+    if let Some(end) = body.challenge_end_time.as_ref() {
+        input.challenge_end_time = Some(parse_challenge_time_value(end)?);
+    }
+    if let Some(mode) = body.stagger_mode {
+        let parsed = StaggerMode::from_str(&mode);
+        input.stagger_mode = Some(parsed);
+        if parsed != StaggerMode::Stepped {
+            input.clear_stagger_schedule = true;
+            input.stagger_schedule = None;
+        }
+    }
+    if let Some(schedule) = body.stagger_schedule {
+        input.stagger_schedule = Some(parse_stagger_schedule(&schedule)?);
+        input.clear_stagger_schedule = false;
+    }
+    if let Some(geo) = body.geo_enforcement {
+        input.geo_enforcement = Some(GeoEnforcement::from_str(&geo));
+    }
+    Ok(())
+}
+
 pub async fn list_campaigns(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<SuccessResponse<Vec<Value>>>> {
@@ -78,27 +109,7 @@ pub async fn update_campaign(
     let ctx = SlugPath { slug: slug.clone() }.into_context(&state).await?;
 
     let mut input = CampaignUpdateInput::default();
-    if let Some(name) = body.name {
-        input.name = Some(name);
-    }
-    if let Some(status) = body.status {
-        input.status = Some(CampaignStatus::from_str(&status));
-    }
-    if let Some(start) = body.challenge_start_time.as_ref() {
-        input.challenge_start_time = Some(parse_challenge_time_value(start)?);
-    }
-    if let Some(end) = body.challenge_end_time.as_ref() {
-        input.challenge_end_time = Some(parse_challenge_time_value(end)?);
-    }
-    if let Some(mode) = body.stagger_mode {
-        input.stagger_mode = Some(StaggerMode::from_str(&mode));
-    }
-    if let Some(schedule) = body.stagger_schedule {
-        input.stagger_schedule = Some(parse_stagger_schedule(&schedule)?);
-    }
-    if let Some(geo) = body.geo_enforcement {
-        input.geo_enforcement = Some(GeoEnforcement::from_str(&geo));
-    }
+    apply_update_body(body, &mut input)?;
 
     let payload = build_update_payload(&input)?;
     validate_challenge_window(&payload)?;
@@ -159,21 +170,7 @@ pub async fn update_campaign_settings(
     Json(body): Json<UpdateCampaignBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
     let mut input = CampaignUpdateInput::default();
-    if let Some(start) = body.challenge_start_time.as_ref() {
-        input.challenge_start_time = Some(parse_challenge_time_value(start)?);
-    }
-    if let Some(end) = body.challenge_end_time.as_ref() {
-        input.challenge_end_time = Some(parse_challenge_time_value(end)?);
-    }
-    if let Some(mode) = body.stagger_mode {
-        input.stagger_mode = Some(StaggerMode::from_str(&mode));
-    }
-    if let Some(schedule) = body.stagger_schedule {
-        input.stagger_schedule = Some(parse_stagger_schedule(&schedule)?);
-    }
-    if let Some(geo) = body.geo_enforcement {
-        input.geo_enforcement = Some(GeoEnforcement::from_str(&geo));
-    }
+    apply_update_body(body, &mut input)?;
 
     let payload = build_update_payload(&input)?;
     validate_challenge_window(&payload)?;

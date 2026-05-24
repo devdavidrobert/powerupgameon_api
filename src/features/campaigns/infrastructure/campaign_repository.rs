@@ -283,7 +283,9 @@ pub fn build_update_payload(body: &CampaignUpdateInput) -> ApiResult<Map<String,
     if let Some(mode) = &body.stagger_mode {
         payload.insert("staggerMode".into(), json!(mode.as_str()));
     }
-    if let Some(schedule) = &body.stagger_schedule {
+    if body.clear_stagger_schedule {
+        payload.insert("staggerSchedule".into(), Value::Null);
+    } else if let Some(schedule) = &body.stagger_schedule {
         payload.insert(
             "staggerSchedule".into(),
             json!(schedule
@@ -309,6 +311,7 @@ pub struct CampaignUpdateInput {
     pub challenge_end_time: Option<Value>,
     pub stagger_mode: Option<StaggerMode>,
     pub stagger_schedule: Option<Vec<StaggerStep>>,
+    pub clear_stagger_schedule: bool,
     pub geo_enforcement: Option<GeoEnforcement>,
 }
 
@@ -379,4 +382,37 @@ pub fn validate_slug(slug: &str) -> ApiResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_update_payload_clears_stagger_schedule_when_requested() {
+        let payload = build_update_payload(&CampaignUpdateInput {
+            stagger_mode: Some(StaggerMode::Linear),
+            clear_stagger_schedule: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(payload.get("staggerMode").and_then(|v| v.as_str()), Some("linear"));
+        assert_eq!(payload.get("staggerSchedule"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn build_update_payload_writes_stagger_steps_when_present() {
+        let payload = build_update_payload(&CampaignUpdateInput {
+            stagger_mode: Some(StaggerMode::Stepped),
+            stagger_schedule: Some(vec![StaggerStep {
+                release_at: 1_700_000_000_000,
+                release_percent: 0.5,
+            }]),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(payload.get("staggerSchedule").and_then(|v| v.as_array()).is_some());
+    }
 }

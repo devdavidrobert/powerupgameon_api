@@ -11,7 +11,9 @@ use powerupgameon_api::error::SuccessResponse;
 use powerupgameon_api::features::campaigns::domain::{
     Campaign, CampaignStatus, GeoEnforcement, StaggerMode, StaggerStep,
 };
-use powerupgameon_api::features::campaigns::infrastructure::CampaignPaths;
+use powerupgameon_api::features::campaigns::infrastructure::{
+    build_update_payload, CampaignPaths, CampaignUpdateInput,
+};
 use powerupgameon_api::features::campaigns::presentation::{
     get_campaign_settings_admin, CampaignContext,
 };
@@ -122,4 +124,18 @@ async fn admin_full_route_pattern_bypasses_challenge_open_middleware() {
         .await
         .unwrap();
     assert_eq!(admin_response.status(), StatusCode::OK);
+}
+
+#[test]
+fn build_update_payload_clears_stagger_schedule_for_non_stepped_modes() {
+    use powerupgameon_api::features::campaigns::domain::StaggerMode;
+
+    let payload = build_update_payload(&CampaignUpdateInput {
+        stagger_mode: Some(StaggerMode::Immediate),
+        clear_stagger_schedule: true,
+        ..Default::default()
+    })
+    .unwrap();
+
+    assert_eq!(payload.get("staggerSchedule"), Some(&Value::Null));
 }
