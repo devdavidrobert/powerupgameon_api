@@ -21,7 +21,7 @@ use crate::middleware::rate_limit::{
 };
 use crate::middleware::request_context::request_context_middleware;
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderValue, Method, StatusCode},
     middleware,
     response::IntoResponse,
@@ -30,9 +30,11 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
+
+const JSON_BODY_LIMIT: usize = 256 * 1024;
+const UPLOAD_BODY_LIMIT: usize = 3 * 1024 * 1024;
 
 fn with_admin(state: Arc<AppState>, router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
@@ -96,7 +98,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             .route(
                 "/{id}/options/{option_index}/image/upload",
                 post(questions::upload_question_option_image)
-                    .layer(RequestBodyLimitLayer::new(3 * 1024 * 1024)),
+                    .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
             ),
     ));
 
@@ -116,7 +118,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             )
             .route(
                 "/{id}/image/upload",
-                post(prizes::upload_prize_image).layer(RequestBodyLimitLayer::new(3 * 1024 * 1024)),
+                post(prizes::upload_prize_image).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
             ),
     ));
 
@@ -173,7 +175,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .route("/timers", delete(clear_campaign_timers))
                 .route(
                     "/brand-logos/upload",
-                    post(upload_brand_logo).layer(RequestBodyLimitLayer::new(3 * 1024 * 1024)),
+                    post(upload_brand_logo).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
                 ),
         ));
 
@@ -255,7 +257,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             global_rate_limit_middleware,
         ))
         .layer(middleware::from_fn(request_context_middleware))
-        .layer(RequestBodyLimitLayer::new(256 * 1024))
+        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .layer(SetResponseHeaderLayer::if_not_present(
             axum::http::header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
