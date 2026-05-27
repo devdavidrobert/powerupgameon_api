@@ -23,23 +23,12 @@ impl PrizeModel {
             .from(PRIZES_SUBCOL)
             .parent(parent)
             .order_by([("order", FirestoreQueryDirection::Ascending)])
-            .obj::<Map<String, Value>>()
+            .obj()
             .query()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
-        Ok(rows
-            .into_iter()
-            .map(|mut row| {
-                row.entry("isRealPrize").or_insert(json!(true));
-                if !row.contains_key("id") {
-                    if let Some(id) = document_id_from_map(&row) {
-                        row.insert("id".into(), json!(id));
-                    }
-                }
-                row
-            })
-            .collect())
+        Ok(rows.into_iter().map(attach_prize_document_id).collect())
     }
 
     pub async fn find_by_id(
@@ -59,15 +48,14 @@ impl PrizeModel {
             .select()
             .by_id_in(PRIZES_SUBCOL)
             .parent(parent)
-            .obj::<Map<String, Value>>()
+            .obj()
             .one(id)
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
 
         Ok(doc.map(|mut row| {
-            row.entry("isRealPrize").or_insert(json!(true));
             row.insert("id".into(), json!(id));
-            row
+            attach_prize_document_id(row)
         }))
     }
 
@@ -148,6 +136,14 @@ impl PrizeModel {
     }
 }
 
+fn attach_prize_document_id(mut row: Map<String, Value>) -> Map<String, Value> {
+    row.entry("isRealPrize".to_string()).or_insert(json!(true));
+    if let Some(doc_id) = document_id_from_map(&row) {
+        row.insert("id".into(), json!(doc_id));
+    }
+    row
+}
+
 /// Firestore `.update().object()` replaces the whole document in our client — merge fields
 /// so name, order, and isRealPrize survive partial updates (e.g. image-only uploads).
 fn merge_prize_fields(
@@ -176,6 +172,34 @@ fn merge_prize_fields(
 mod tests {
     use super::*;
     use serde_json::Map;
+
+    #[test]
+    fn attach_prize_document_id_uses_firestore_metadata_when_id_missing() {
+        let row = Map::from_iter([
+            ("_firestore_id".into(), json!("prize-abc")),
+            ("name".into(), json!("Steam 500ml")),
+            ("order".into(), json!(1)),
+        ]);
+
+        let attached = attach_prize_document_id(row);
+        assert_eq!(attached.get("id").and_then(|v| v.as_str()), Some("prize-abc"));
+        assert_eq!(
+            attached.get("isRealPrize").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn attach_prize_document_id_overwrites_blank_id_with_firestore_metadata() {
+        let row = Map::from_iter([
+            ("id".into(), json!("")),
+            ("_firestore_id".into(), json!("prize-abc")),
+            ("name".into(), json!("Steam 500ml")),
+        ]);
+
+        let attached = attach_prize_document_id(row);
+        assert_eq!(attached.get("id").and_then(|v| v.as_str()), Some("prize-abc"));
+    }
 
     #[test]
     fn find_all_rows_get_id_from_firestore_metadata() {
