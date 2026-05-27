@@ -89,6 +89,8 @@ pub struct QuestionBody {
     pub rating: Option<Value>,
     #[serde(rename = "correctRating")]
     pub correct_rating: Option<i64>,
+    #[serde(rename = "acceptAnyAnswer")]
+    pub accept_any_answer: Option<bool>,
     pub order: Option<i64>,
 }
 
@@ -119,6 +121,7 @@ pub async fn create_question(
         body.rating,
         body.correct_rating,
         order,
+        body.accept_any_answer,
     )?;
 
     let question = QuestionModel::create(&state, &ctx.paths, data).await?;
@@ -151,6 +154,7 @@ pub async fn update_question(
         body.rating,
         body.correct_rating,
         body.order,
+        body.accept_any_answer,
     )?;
 
     let updated = QuestionModel::update(&state, &ctx.paths, &path.id, merged).await?;
@@ -237,6 +241,7 @@ pub async fn upload_question_option_image(
         None,
         None,
         Some(options),
+        None,
         None,
         None,
         None,

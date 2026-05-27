@@ -99,6 +99,7 @@ pub fn build_question_document(
     rating: Option<Value>,
     correct_rating: Option<i64>,
     order: i64,
+    accept_any_answer: Option<bool>,
 ) -> Result<Map<String, Value>, ApiError> {
     let mut data = Map::new();
     data.insert("text".into(), json!(text));
@@ -113,15 +114,13 @@ pub fn build_question_document(
                     "multiple choice questions need at least 2 options.",
                 ));
             }
-            let correct_index = require_correct_index(correct_index, options.len())?;
             data.insert("options".into(), json!(options_to_json(&options)));
-            data.insert("correctIndex".into(), json!(correct_index));
+            apply_choice_grading(&mut data, accept_any_answer, correct_index, options.len())?;
         }
         QuestionType::TrueFalse => {
             let options = resolve_true_false_options(options)?;
-            let correct_index = require_correct_index(correct_index, options.len())?;
             data.insert("options".into(), json!(options_to_json(&options)));
-            data.insert("correctIndex".into(), json!(correct_index));
+            apply_choice_grading(&mut data, accept_any_answer, correct_index, options.len())?;
         }
         QuestionType::Rating => {
             let rating_obj = rating.ok_or_else(|| {
@@ -180,6 +179,7 @@ pub fn merge_question_updates(
     rating: Option<Value>,
     correct_rating: Option<i64>,
     order: Option<i64>,
+    accept_any_answer: Option<bool>,
 ) -> Result<Map<String, Value>, ApiError> {
     let mut merged = existing.clone();
     if let Some(text) = text {
@@ -207,15 +207,23 @@ pub fn merge_question_updates(
                 }
                 merged.insert("options".into(), json!(options_to_json(&options)));
             }
-            if let Some(correct_index) = correct_index {
-                let len = merged
-                    .get("options")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                let idx = require_correct_index(Some(correct_index), len)?;
-                merged.insert("correctIndex".into(), json!(idx));
-            }
+            let options_len = merged
+                .get("options")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let resolved_accept = accept_any_answer.unwrap_or_else(|| {
+                merged
+                    .get("acceptAnyAnswer")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            });
+            apply_choice_grading_to_merged(
+                &mut merged,
+                Some(resolved_accept),
+                correct_index,
+                options_len,
+            )?;
             strip_type_specific_fields(&mut merged, resolved_type);
         }
         QuestionType::TrueFalse => {
@@ -223,10 +231,18 @@ pub fn merge_question_updates(
                 let parsed = resolve_true_false_options(Some(opts))?;
                 merged.insert("options".into(), json!(options_to_json(&parsed)));
             }
-            if let Some(correct_index) = correct_index {
-                let idx = require_correct_index(Some(correct_index), 2)?;
-                merged.insert("correctIndex".into(), json!(idx));
-            }
+            let resolved_accept = accept_any_answer.unwrap_or_else(|| {
+                merged
+                    .get("acceptAnyAnswer")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            });
+            apply_choice_grading_to_merged(
+                &mut merged,
+                Some(resolved_accept),
+                correct_index,
+                2,
+            )?;
             strip_type_specific_fields(&mut merged, resolved_type);
         }
         QuestionType::Rating => {
@@ -304,6 +320,7 @@ mod tests {
             None,
             None,
             2,
+            None,
         )
         .expect("input document");
 
@@ -323,6 +340,7 @@ mod tests {
             None,
             None,
             1,
+            None,
         )
         .expect("true_false document");
 
@@ -344,6 +362,7 @@ mod tests {
             None,
             None,
             1,
+            None,
         )
         .expect("custom true_false");
 
@@ -367,6 +386,7 @@ mod tests {
             None,
             None,
             1,
+            None,
         )
         .expect("mc with images");
 
@@ -378,11 +398,82 @@ mod tests {
     }
 
     #[test]
+    fn multiple_choice_builds_without_correct_index_in_questionnaire_mode() {
+        let doc = build_question_document(
+            "How did you hear about us?",
+            QuestionType::MultipleChoice,
+            Some(vec![json!("Social media"), json!("Friend")]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            Some(true),
+        )
+        .expect("questionnaire mc");
+
+        assert_eq!(
+            doc.get("acceptAnyAnswer").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(doc.get("correctIndex").is_none());
+    }
+
+    #[test]
     fn legacy_string_options_still_work() {
         let parsed = normalize_options(Some(vec![json!("Option A"), json!("Option B")])).unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].label, "Option A");
     }
+}
+
+fn apply_choice_grading(
+    data: &mut Map<String, Value>,
+    accept_any_answer: Option<bool>,
+    correct_index: Option<i64>,
+    options_len: usize,
+) -> Result<(), ApiError> {
+    if accept_any_answer == Some(true) {
+        data.insert("acceptAnyAnswer".into(), json!(true));
+        data.remove("correctIndex");
+        return Ok(());
+    }
+
+    data.remove("acceptAnyAnswer");
+    let idx = require_correct_index(correct_index, options_len)?;
+    data.insert("correctIndex".into(), json!(idx));
+    Ok(())
+}
+
+fn apply_choice_grading_to_merged(
+    merged: &mut Map<String, Value>,
+    accept_any_answer: Option<bool>,
+    correct_index: Option<i64>,
+    options_len: usize,
+) -> Result<(), ApiError> {
+    if accept_any_answer == Some(true) {
+        merged.insert("acceptAnyAnswer".into(), json!(true));
+        merged.remove("correctIndex");
+        return Ok(());
+    }
+
+    if accept_any_answer == Some(false) {
+        merged.remove("acceptAnyAnswer");
+    }
+
+    if let Some(correct_index) = correct_index {
+        let idx = require_correct_index(Some(correct_index), options_len)?;
+        merged.insert("correctIndex".into(), json!(idx));
+    } else if accept_any_answer == Some(false)
+        && merged.get("correctIndex").is_none()
+    {
+        return Err(ApiError::bad_request(
+            "correctIndex is required when scoring is enabled.",
+        ));
+    }
+
+    Ok(())
 }
 
 fn require_correct_index(correct_index: Option<i64>, options_len: usize) -> Result<i64, ApiError> {

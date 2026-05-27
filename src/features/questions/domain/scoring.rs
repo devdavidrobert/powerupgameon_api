@@ -3,6 +3,9 @@ use serde_json::{Map, Value};
 
 /// Questions with a configured correct answer count toward the spin pass score.
 pub fn question_is_gradable(question: &Map<String, Value>) -> bool {
+    if question_accepts_any_answer(question) {
+        return false;
+    }
     match QuestionType::from_question_doc(question) {
         QuestionType::MultipleChoice | QuestionType::TrueFalse => true,
         QuestionType::Input => question
@@ -15,6 +18,13 @@ pub fn question_is_gradable(question: &Map<String, Value>) -> bool {
             .and_then(|v| v.as_i64())
             .is_some(),
     }
+}
+
+pub fn question_accepts_any_answer(question: &Map<String, Value>) -> bool {
+    question
+        .get("acceptAnyAnswer")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +81,9 @@ pub fn answer_is_correct(question: &serde_json::Map<String, Value>, answer: &Val
     let question_type = QuestionType::from_question_doc(question);
     match question_type {
         QuestionType::MultipleChoice | QuestionType::TrueFalse => {
+            if question_accepts_any_answer(question) {
+                return answer_as_i64(answer).is_some();
+            }
             let ans = answer_as_i64(answer);
             let correct = question
                 .get("correctIndex")
@@ -252,6 +265,28 @@ mod tests {
         .as_object()
         .unwrap()
         .clone()
+    }
+
+    #[test]
+    fn questionnaire_multiple_choice_is_not_gradable() {
+        let q = json!({
+            "type": "multiple_choice",
+            "options": ["A", "B"],
+            "acceptAnyAnswer": true
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(!question_is_gradable(&q));
+        assert!(answer_is_correct(&q, &json!(0)));
+        assert!(answer_is_correct(&q, &json!(1)));
+
+        let maps = vec![q];
+        let answers = vec![json!(1)];
+        let result = compute_quiz_score(&maps, &answers).expect("score");
+        assert_eq!(result.score, 0);
+        assert_eq!(result.total, 0);
+        assert_eq!(result.percentage, 100);
     }
 
     #[test]
