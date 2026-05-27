@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::media::domain::{
     build_gcs_multipart_body, extension_for_content_type, firebase_download_url,
-    validate_image_upload,
+    public_asset_url, validate_image_upload, IMAGE_CACHE_CONTROL,
 };
 use reqwest::Client;
 use serde_json::json;
@@ -32,6 +32,7 @@ pub async fn upload_public_image(
 
     let metadata_json = json!({
         "name": object_path,
+        "cacheControl": IMAGE_CACHE_CONTROL,
         "metadata": {
             "firebaseStorageDownloadTokens": download_token
         }
@@ -87,5 +88,9 @@ pub async fn upload_public_image(
         return Err(ApiError::Internal(anyhow::anyhow!("Failed to upload image.")));
     }
 
-    Ok(firebase_download_url(&bucket, &object_path, &download_token))
+    let storage_url = firebase_download_url(&bucket, &object_path, &download_token);
+    Ok(public_asset_url(
+        &storage_url,
+        state.config.public_web_origin.as_deref(),
+    ))
 }

@@ -171,6 +171,7 @@ fn config_allows_explicit_and_vercel_project_origins() {
         firebase_service_account_json: None,
         allowed_origins: vec!["https://custom.example.com".into()],
         cors_vercel_project: Some("powerupgameon".into()),
+        public_web_origin: None,
         trust_proxy: true,
         rate_limit_enabled: true,
         global_rate_limit_max: 200,

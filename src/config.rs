@@ -29,6 +29,8 @@ pub struct Config {
     pub ip_geo_api_url: Option<String>,
     /// When set (e.g. `powerupgameon`), also allow `https://{project}.vercel.app` and preview URLs.
     pub cors_vercel_project: Option<String>,
+    /// Public web app origin used to serve uploaded assets through Vercel CDN (e.g. `https://powerupgameon.vercel.app`).
+    pub public_web_origin: Option<String>,
 }
 
 impl Config {
@@ -183,6 +185,11 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let public_web_origin = env::var("PUBLIC_WEB_ORIGIN")
+            .ok()
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             port,
             node_env,
@@ -212,6 +219,7 @@ impl Config {
             ip_geo_max_distance_km,
             ip_geo_api_url,
             cors_vercel_project,
+            public_web_origin,
         })
     }
 

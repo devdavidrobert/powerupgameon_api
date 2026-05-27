@@ -1,5 +1,7 @@
 pub const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 
+pub const IMAGE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
 pub const ALLOWED_CONTENT_TYPES: &[&str] =
     &["image/png", "image/jpeg", "image/webp", "image/svg+xml"];
 
@@ -30,6 +32,20 @@ pub fn firebase_download_url(bucket: &str, object_path: &str, download_token: &s
     let encoded = urlencoding::encode(object_path);
     format!(
         "https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{encoded}?alt=media&token={download_token}"
+    )
+}
+
+/// Rewrites Firebase Storage URLs to the public web CDN proxy when configured.
+pub fn public_asset_url(storage_url: &str, web_origin: Option<&str>) -> String {
+    let Some(origin) = web_origin else {
+        return storage_url.to_string();
+    };
+    if !storage_url.starts_with("https://firebasestorage.googleapis.com/") {
+        return storage_url.to_string();
+    }
+    format!(
+        "{origin}/cdn/asset?src={}",
+        urlencoding::encode(storage_url)
     )
 }
 
@@ -87,5 +103,21 @@ mod tests {
         );
         assert!(url.contains("campaigns%2Fsummer%2Fprizes%2Fp1.png"));
         assert!(url.contains("alt=media&token=abc-123"));
+    }
+
+    #[test]
+    fn public_asset_url_rewrites_firebase_urls_when_origin_is_set() {
+        let storage = firebase_download_url("demo.appspot.com", "campaigns/a.png", "tok");
+        let cdn = public_asset_url(&storage, Some("https://powerupgameon.vercel.app"));
+        assert!(cdn.starts_with("https://powerupgameon.vercel.app/cdn/asset?src="));
+    }
+
+    #[test]
+    fn public_asset_url_keeps_non_firebase_urls() {
+        let url = "https://www.steamenergydrink.com/logo.png";
+        assert_eq!(
+            public_asset_url(url, Some("https://powerupgameon.vercel.app")),
+            url
+        );
     }
 }
