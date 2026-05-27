@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use crate::config::Config;
 use crate::error::json_error;
-use crate::utils::spin_token::verify_spin_token;
+use crate::features::campaigns::domain::DEFAULT_IP_RATE_LIMIT_WINDOW_SECS;
+use crate::features::campaigns::presentation::CampaignContext;
 use axum::{
     body::Body,
     extract::State,
@@ -12,11 +13,8 @@ use axum::{
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use redis::AsyncCommands;
-use serde::Deserialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-const SPIN_BODY_LIMIT: usize = 16 * 1024;
 
 static MEMORY_STORE: Lazy<DashMap<String, (u32, Instant)>> = Lazy::new(DashMap::new);
 
@@ -46,28 +44,32 @@ pub fn global_rule(state: &AppState) -> RateLimitRule {
     }
 }
 
-pub fn registration_rule(state: &AppState) -> RateLimitRule {
-    RateLimitRule {
-        prefix: "rl_reg",
-        window: Duration::from_secs(60 * 60),
-        max: state.config.registration_rate_limit_max,
+fn campaign_ip_window_secs(req: &Request<Body>) -> u64 {
+    req.extensions()
+        .get::<CampaignContext>()
+        .map(|ctx| ctx.campaign.ip_rate_limit_window_secs())
+        .unwrap_or(DEFAULT_IP_RATE_LIMIT_WINDOW_SECS)
+}
+
+fn campaign_ip_max(config: &Config, prefix: &str) -> u32 {
+    match prefix {
+        "rl_reg" => config.registration_rate_limit_max,
+        "rl_sub" => config.submission_rate_limit_max,
+        "rl_spin" => config.spin_rate_limit_max,
+        _ => 1,
     }
 }
 
-pub fn submission_rule(_state: &AppState) -> RateLimitRule {
+fn campaign_ip_rule(config: &Config, prefix: &'static str, window_secs: u64) -> RateLimitRule {
     RateLimitRule {
-        prefix: "rl_sub",
-        window: Duration::from_secs(15 * 60),
-        max: 30,
+        prefix,
+        window: Duration::from_secs(window_secs),
+        max: campaign_ip_max(config, prefix),
     }
 }
 
-pub fn spin_rule(state: &AppState) -> RateLimitRule {
-    RateLimitRule {
-        prefix: "rl_spin",
-        window: Duration::from_secs(60 * 60),
-        max: state.config.spin_rate_limit_max,
-    }
+pub fn campaign_ip_rate_limit_key(campaign_id: &str, ip: &str) -> String {
+    format!("{campaign_id}:{ip}")
 }
 
 pub async fn check_rate_limit_config(
@@ -135,9 +137,9 @@ pub async fn check_rate_limit(
 
 fn rate_limit_message(prefix: &str) -> &'static str {
     match prefix {
-        "rl_reg" => "Too many registration attempts from this IP. Please try again in an hour.",
-        "rl_sub" => "Too many submissions. Please try again later.",
-        "rl_spin" => "Too many spin attempts. Please try again later.",
+        "rl_reg" => "This IP has already registered for this campaign. Please try again later.",
+        "rl_sub" => "This IP has already submitted for this campaign. Please try again later.",
+        "rl_spin" => "This IP has already spun for this campaign. Please try again later.",
         _ => "Too many requests. Please try again later.",
     }
 }
@@ -173,7 +175,15 @@ pub async fn registration_rate_limit_middleware(
         req.extensions(),
         state.config.trust_proxy,
     );
-    if let Err(resp) = check_rate_limit(&state, &ip, &registration_rule(&state)).await {
+    let window_secs = campaign_ip_window_secs(&req);
+    let campaign_id = req
+        .extensions()
+        .get::<CampaignContext>()
+        .map(|ctx| ctx.campaign_id().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let key = campaign_ip_rate_limit_key(&campaign_id, &ip);
+    let rule = campaign_ip_rule(&state.config, "rl_reg", window_secs);
+    if let Err(resp) = check_rate_limit(&state, &key, &rule).await {
         return resp;
     }
     next.run(req).await
@@ -189,27 +199,18 @@ pub async fn submission_rate_limit_middleware(
         req.extensions(),
         state.config.trust_proxy,
     );
-    if let Err(resp) = check_rate_limit(&state, &ip, &submission_rule(&state)).await {
+    let window_secs = campaign_ip_window_secs(&req);
+    let campaign_id = req
+        .extensions()
+        .get::<CampaignContext>()
+        .map(|ctx| ctx.campaign_id().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let key = campaign_ip_rate_limit_key(&campaign_id, &ip);
+    let rule = campaign_ip_rule(&state.config, "rl_sub", window_secs);
+    if let Err(resp) = check_rate_limit(&state, &key, &rule).await {
         return resp;
     }
     next.run(req).await
-}
-
-#[derive(Deserialize)]
-struct SpinRateLimitBody {
-    #[serde(rename = "spinToken")]
-    spin_token: Option<String>,
-}
-
-pub fn spin_rate_limit_key(config: &Config, ip: &str, body: &[u8]) -> String {
-    let sid = extract_spin_session_id(config, body).unwrap_or_else(|| "na".into());
-    format!("{ip}:{sid}")
-}
-
-fn extract_spin_session_id(config: &Config, body: &[u8]) -> Option<String> {
-    let parsed: SpinRateLimitBody = serde_json::from_slice(body).ok()?;
-    let token = parsed.spin_token.filter(|s| !s.is_empty())?;
-    verify_spin_token(config, &token).ok().map(|(sid, _)| sid)
 }
 
 pub async fn spin_rate_limit_middleware(
@@ -222,15 +223,16 @@ pub async fn spin_rate_limit_middleware(
         req.extensions(),
         state.config.trust_proxy,
     );
-    let (parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, SPIN_BODY_LIMIT).await {
-        Ok(bytes) => bytes,
-        Err(_) => return json_error(StatusCode::BAD_REQUEST, "Unable to read spin request body."),
-    };
-    let key = spin_rate_limit_key(&state.config, &ip, &bytes);
-    if let Err(resp) = check_rate_limit(&state, &key, &spin_rule(&state)).await {
+    let window_secs = campaign_ip_window_secs(&req);
+    let campaign_id = req
+        .extensions()
+        .get::<CampaignContext>()
+        .map(|ctx| ctx.campaign_id().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let key = campaign_ip_rate_limit_key(&campaign_id, &ip);
+    let rule = campaign_ip_rule(&state.config, "rl_spin", window_secs);
+    if let Err(resp) = check_rate_limit(&state, &key, &rule).await {
         return resp;
     }
-    next.run(Request::from_parts(parts, Body::from(bytes)))
-        .await
+    next.run(req).await
 }

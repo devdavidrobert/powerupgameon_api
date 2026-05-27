@@ -51,6 +51,7 @@ mod tests {
             brand_logos: None,
             player_outcome_copy: None,
             registration_form_header: None,
+            ip_rate_limit_window_secs: None,
             created_at: None,
             updated_at: None,
         }

@@ -29,21 +29,17 @@ async fn rate_limit_disabled_allows_unlimited_requests() {
 async fn rate_limit_enabled_blocks_after_max() {
     let mut config = test_config();
     config.rate_limit_enabled = true;
-    config.registration_rate_limit_max = 2;
     let rule = RateLimitRule {
         prefix: "rl_reg",
         window: Duration::from_secs(60 * 60),
-        max: config.registration_rate_limit_max,
+        max: 1,
     };
 
-    check_rate_limit_config(&config, &None, "10.0.0.99", &rule)
+    check_rate_limit_config(&config, &None, "campaign-1:10.0.0.99", &rule)
         .await
         .expect("first");
-    check_rate_limit_config(&config, &None, "10.0.0.99", &rule)
-        .await
-        .expect("second");
     assert!(
-        check_rate_limit_config(&config, &None, "10.0.0.99", &rule)
+        check_rate_limit_config(&config, &None, "campaign-1:10.0.0.99", &rule)
             .await
             .is_err()
     );

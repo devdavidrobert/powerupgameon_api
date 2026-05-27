@@ -89,6 +89,7 @@ impl CampaignRepository {
             "staggerSchedule": null,
             "geoEnforcement": GeoEnforcement::Reject.as_str(),
             "spinPassPercent": 100,
+            "ipRateLimitWindowSecs": crate::features::campaigns::domain::DEFAULT_IP_RATE_LIMIT_WINDOW_SECS,
             "createdAt": now,
             "updatedAt": now,
         });
@@ -229,6 +230,9 @@ pub fn map_campaign(doc: Map<String, Value>) -> Option<Campaign> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        ip_rate_limit_window_secs: doc
+            .get("ipRateLimitWindowSecs")
+            .and_then(|v| v.as_i64()),
         created_at: doc
             .get("createdAt")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
@@ -253,6 +257,7 @@ pub fn campaign_to_json(campaign: &Campaign) -> Value {
         "brandLogos": campaign.sorted_brand_logos(),
         "playerOutcomeCopy": campaign.player_outcome_copy_or_default(),
         "registrationFormHeader": campaign.registration_form_header_or_default(),
+        "ipRateLimitWindowSecs": campaign.ip_rate_limit_window_secs(),
         "createdAt": campaign.created_at,
         "updatedAt": campaign.updated_at,
     })
@@ -355,8 +360,14 @@ pub fn build_update_payload(body: &CampaignUpdateInput) -> ApiResult<Map<String,
     }
     if body.clear_registration_form_header {
         payload.insert("registrationFormHeader".into(), Value::Null);
-    } else if let Some(header) = &body.registration_form_header {
+    } else     if let Some(header) = &body.registration_form_header {
         payload.insert("registrationFormHeader".into(), json!(header));
+    }
+    if let Some(window_secs) = body.ip_rate_limit_window_secs {
+        payload.insert(
+            "ipRateLimitWindowSecs".into(),
+            json!(window_secs),
+        );
     }
     Ok(payload)
 }
@@ -378,6 +389,7 @@ pub struct CampaignUpdateInput {
     pub clear_player_outcome_copy: bool,
     pub registration_form_header: Option<String>,
     pub clear_registration_form_header: bool,
+    pub ip_rate_limit_window_secs: Option<i64>,
 }
 
 pub fn parse_challenge_time_value(value: &Value) -> ApiResult<Value> {
@@ -514,6 +526,18 @@ pub fn parse_registration_form_header(value: &str) -> ApiResult<String> {
         )));
     }
     Ok(trimmed.to_string())
+}
+
+pub fn parse_ip_rate_limit_window_secs(value: i64) -> ApiResult<i64> {
+    use crate::features::campaigns::domain::{
+        MAX_IP_RATE_LIMIT_WINDOW_SECS, MIN_IP_RATE_LIMIT_WINDOW_SECS,
+    };
+    if !(MIN_IP_RATE_LIMIT_WINDOW_SECS..=MAX_IP_RATE_LIMIT_WINDOW_SECS).contains(&value) {
+        return Err(ApiError::bad_request(format!(
+            "ipRateLimitWindowSecs must be between {MIN_IP_RATE_LIMIT_WINDOW_SECS} and {MAX_IP_RATE_LIMIT_WINDOW_SECS}."
+        )));
+    }
+    Ok(value)
 }
 
 pub fn parse_player_outcome_copy_from_value(value: &Value) -> Option<PlayerOutcomeCopy> {

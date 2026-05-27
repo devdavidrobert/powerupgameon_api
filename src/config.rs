@@ -15,6 +15,7 @@ pub struct Config {
     pub global_rate_limit_max: u32,
     pub global_rate_limit_window_secs: u64,
     pub registration_rate_limit_max: u32,
+    pub submission_rate_limit_max: u32,
     pub spin_rate_limit_max: u32,
     pub rate_limit_key_prefix: Option<String>,
     pub rate_limit_window_ms: u64,
@@ -173,12 +174,17 @@ impl Config {
         let registration_rate_limit_max = env::var("REGISTRATION_RATE_LIMIT_MAX")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(3);
+            .unwrap_or(1);
+
+        let submission_rate_limit_max = env::var("SUBMISSION_RATE_LIMIT_MAX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
 
         let spin_rate_limit_max = env::var("SPIN_RATE_LIMIT_MAX")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(8);
+            .unwrap_or(1);
 
         let rate_limit_key_prefix = env::var("RATE_LIMIT_KEY_PREFIX")
             .ok()
@@ -206,6 +212,7 @@ impl Config {
             global_rate_limit_max,
             global_rate_limit_window_secs,
             registration_rate_limit_max,
+            submission_rate_limit_max,
             spin_rate_limit_max,
             rate_limit_key_prefix,
             rate_limit_window_ms: global_rate_limit_window_secs * 1000,

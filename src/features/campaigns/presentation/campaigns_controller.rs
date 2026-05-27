@@ -4,7 +4,8 @@ use crate::features::campaigns::application::CampaignService;
 use crate::features::campaigns::domain::{CampaignStatus, GeoEnforcement, StaggerMode};
 use crate::features::campaigns::infrastructure::{
     build_update_payload, campaign_to_json, parse_brand_logos, parse_challenge_time_value,
-    parse_player_outcome_copy, parse_registration_form_header, parse_stagger_schedule,
+    parse_ip_rate_limit_window_secs, parse_player_outcome_copy, parse_registration_form_header,
+    parse_stagger_schedule,
     validate_challenge_window, validate_slug, CampaignRepository, CampaignUpdateInput,
 };
 use crate::features::campaigns::presentation::campaign_context::{CampaignContext, SlugPath};
@@ -48,6 +49,8 @@ pub struct UpdateCampaignBody {
     pub player_outcome_copy: Option<Value>,
     #[serde(rename = "registrationFormHeader")]
     pub registration_form_header: Option<String>,
+    #[serde(rename = "ipRateLimitWindowSecs")]
+    pub ip_rate_limit_window_secs: Option<i64>,
 }
 
 fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) -> ApiResult<()> {
@@ -116,6 +119,9 @@ fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) 
             input.registration_form_header = Some(parse_registration_form_header(trimmed)?);
             input.clear_registration_form_header = false;
         }
+    }
+    if let Some(window_secs) = body.ip_rate_limit_window_secs {
+        input.ip_rate_limit_window_secs = Some(parse_ip_rate_limit_window_secs(window_secs)?);
     }
     Ok(())
 }
@@ -225,6 +231,7 @@ pub async fn get_campaign_settings_admin(
         "brandLogos": ctx.campaign.sorted_brand_logos(),
         "playerOutcomeCopy": ctx.campaign.player_outcome_copy_or_default(),
         "registrationFormHeader": ctx.campaign.registration_form_header_or_default(),
+        "ipRateLimitWindowSecs": ctx.campaign.ip_rate_limit_window_secs(),
         "hasGeofenceLocations": has_geofence_locations,
     })))
 }
@@ -252,6 +259,7 @@ pub async fn update_campaign_settings(
         "brandLogos": updated.sorted_brand_logos(),
         "playerOutcomeCopy": updated.player_outcome_copy_or_default(),
         "registrationFormHeader": updated.registration_form_header_or_default(),
+        "ipRateLimitWindowSecs": updated.ip_rate_limit_window_secs(),
     })))
 }
 

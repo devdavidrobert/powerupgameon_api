@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::player_outcome_copy::PlayerOutcomeCopy;
+use super::ip_rate_limit::resolve_ip_rate_limit_window_secs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -119,6 +120,9 @@ pub struct Campaign {
     pub player_outcome_copy: Option<PlayerOutcomeCopy>,
     #[serde(rename = "registrationFormHeader", skip_serializing_if = "Option::is_none")]
     pub registration_form_header: Option<String>,
+    /// Cooldown window (seconds) before the same IP can register, submit, or spin again.
+    #[serde(rename = "ipRateLimitWindowSecs", skip_serializing_if = "Option::is_none")]
+    pub ip_rate_limit_window_secs: Option<i64>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
@@ -151,6 +155,10 @@ impl Campaign {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .unwrap_or_else(|| DEFAULT_REGISTRATION_FORM_HEADER.to_string())
+    }
+
+    pub fn ip_rate_limit_window_secs(&self) -> u64 {
+        resolve_ip_rate_limit_window_secs(self.ip_rate_limit_window_secs)
     }
 }
 

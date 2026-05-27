@@ -36,6 +36,7 @@ fn draft_campaign_is_not_publicly_accessible() {
         brand_logos: None,
         player_outcome_copy: None,
         registration_form_header: None,
+        ip_rate_limit_window_secs: None,
         created_at: None,
         updated_at: None,
     };
@@ -58,6 +59,7 @@ fn active_campaign_is_publicly_accessible() {
         brand_logos: None,
         player_outcome_copy: None,
         registration_form_header: None,
+        ip_rate_limit_window_secs: None,
         created_at: None,
         updated_at: None,
     };
