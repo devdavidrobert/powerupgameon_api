@@ -27,6 +27,13 @@ pub fn question_accepts_any_answer(question: &Map<String, Value>) -> bool {
         .unwrap_or(false)
 }
 
+pub fn question_allows_multiple_selections(question: &Map<String, Value>) -> bool {
+    question
+        .get("allowMultipleSelections")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuizScoreResult {
     pub score: i64,
@@ -82,7 +89,12 @@ pub fn answer_is_correct(question: &serde_json::Map<String, Value>, answer: &Val
     match question_type {
         QuestionType::MultipleChoice | QuestionType::TrueFalse => {
             if question_accepts_any_answer(question) {
-                return answer_as_i64(answer).is_some();
+                return choice_answer_is_present(question, answer);
+            }
+            if QuestionType::from_question_doc(question) == QuestionType::MultipleChoice
+                && question_allows_multiple_selections(question)
+            {
+                return multi_choice_answer_is_correct(question, answer);
             }
             let ans = answer_as_i64(answer);
             let correct = question
@@ -127,14 +139,32 @@ pub fn validate_submission_answer(
     let question_type = QuestionType::from_question_doc(question);
     match question_type {
         QuestionType::MultipleChoice | QuestionType::TrueFalse => {
-            let ans = answer_as_i64(answer).ok_or_else(|| {
-                format!("Invalid answer for question {index}: expected option index.")
-            })?;
             let options_len = question
                 .get("options")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0) as i64;
+
+            if QuestionType::from_question_doc(question) == QuestionType::MultipleChoice
+                && question_allows_multiple_selections(question)
+            {
+                let indices = answer_as_index_array(answer).ok_or_else(|| {
+                    format!("Invalid answer for question {index}: expected option index array.")
+                })?;
+                if indices.is_empty() {
+                    return Err(format!("Question {index} requires at least one selection."));
+                }
+                for ans in indices {
+                    if ans < 0 || ans >= options_len {
+                        return Err(format!("Invalid answer index for question {index}."));
+                    }
+                }
+                return Ok(());
+            }
+
+            let ans = answer_as_i64(answer).ok_or_else(|| {
+                format!("Invalid answer for question {index}: expected option index.")
+            })?;
             if ans < 0 || ans >= options_len {
                 return Err(format!("Invalid answer index for question {index}."));
             }
@@ -235,6 +265,47 @@ fn normalize_text(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
+fn choice_answer_is_present(question: &Map<String, Value>, answer: &Value) -> bool {
+    if question_allows_multiple_selections(question) {
+        answer_as_index_array(answer)
+            .map(|indices| !indices.is_empty())
+            .unwrap_or(false)
+    } else {
+        answer_as_i64(answer).is_some()
+    }
+}
+
+fn multi_choice_answer_is_correct(question: &Map<String, Value>, answer: &Value) -> bool {
+    let Some(submitted) = answer_as_index_array(answer) else {
+        return false;
+    };
+    let Some(expected) = correct_indices_from_question(question) else {
+        return false;
+    };
+    submitted == expected
+}
+
+fn correct_indices_from_question(question: &Map<String, Value>) -> Option<Vec<i64>> {
+    question
+        .get("correctIndices")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            let mut indices: Vec<i64> = arr.iter().filter_map(|v| v.as_i64()).collect();
+            indices.sort_unstable();
+            indices.dedup();
+            indices
+        })
+        .filter(|indices| !indices.is_empty())
+}
+
+fn answer_as_index_array(value: &Value) -> Option<Vec<i64>> {
+    let array = value.as_array()?;
+    let mut indices: Vec<i64> = array.iter().filter_map(|v| v.as_i64()).collect();
+    indices.sort_unstable();
+    indices.dedup();
+    Some(indices)
+}
+
 fn answer_as_i64(value: &Value) -> Option<i64> {
     match value {
         Value::Number(n) => n.as_i64(),
@@ -268,6 +339,23 @@ mod tests {
     }
 
     #[test]
+    fn scores_multiple_choice_multi_select_by_exact_set() {
+        let q = json!({
+            "type": "multiple_choice",
+            "allowMultipleSelections": true,
+            "options": ["A", "B", "C"],
+            "correctIndices": [0, 2]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(answer_is_correct(&q, &json!([0, 2])));
+        assert!(answer_is_correct(&q, &json!([2, 0])));
+        assert!(!answer_is_correct(&q, &json!([0])));
+        assert!(!answer_is_correct(&q, &json!([0, 1, 2])));
+    }
+
+    #[test]
     fn questionnaire_multiple_choice_is_not_gradable() {
         let q = json!({
             "type": "multiple_choice",
@@ -280,6 +368,17 @@ mod tests {
         assert!(!question_is_gradable(&q));
         assert!(answer_is_correct(&q, &json!(0)));
         assert!(answer_is_correct(&q, &json!(1)));
+
+        let multi = json!({
+            "type": "multiple_choice",
+            "acceptAnyAnswer": true,
+            "allowMultipleSelections": true,
+            "options": ["A", "B"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(answer_is_correct(&multi, &json!([0, 1])));
 
         let maps = vec![q];
         let answers = vec![json!(1)];

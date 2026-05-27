@@ -100,6 +100,8 @@ pub fn build_question_document(
     correct_rating: Option<i64>,
     order: i64,
     accept_any_answer: Option<bool>,
+    allow_multiple_selections: Option<bool>,
+    correct_indices: Option<Vec<i64>>,
 ) -> Result<Map<String, Value>, ApiError> {
     let mut data = Map::new();
     data.insert("text".into(), json!(text));
@@ -115,7 +117,14 @@ pub fn build_question_document(
                 ));
             }
             data.insert("options".into(), json!(options_to_json(&options)));
-            apply_choice_grading(&mut data, accept_any_answer, correct_index, options.len())?;
+            apply_multiple_choice_config(
+                &mut data,
+                accept_any_answer,
+                allow_multiple_selections,
+                correct_index,
+                correct_indices,
+                options.len(),
+            )?;
         }
         QuestionType::TrueFalse => {
             let options = resolve_true_false_options(options)?;
@@ -180,6 +189,8 @@ pub fn merge_question_updates(
     correct_rating: Option<i64>,
     order: Option<i64>,
     accept_any_answer: Option<bool>,
+    allow_multiple_selections: Option<bool>,
+    correct_indices: Option<Vec<i64>>,
 ) -> Result<Map<String, Value>, ApiError> {
     let mut merged = existing.clone();
     if let Some(text) = text {
@@ -218,10 +229,18 @@ pub fn merge_question_updates(
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
             });
-            apply_choice_grading_to_merged(
+            let resolved_multi = allow_multiple_selections.unwrap_or_else(|| {
+                merged
+                    .get("allowMultipleSelections")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            });
+            apply_multiple_choice_config_to_merged(
                 &mut merged,
                 Some(resolved_accept),
+                Some(resolved_multi),
                 correct_index,
+                correct_indices,
                 options_len,
             )?;
             strip_type_specific_fields(&mut merged, resolved_type);
@@ -321,6 +340,8 @@ mod tests {
             None,
             2,
             None,
+            None,
+            None,
         )
         .expect("input document");
 
@@ -340,6 +361,8 @@ mod tests {
             None,
             None,
             1,
+            None,
+            None,
             None,
         )
         .expect("true_false document");
@@ -362,6 +385,8 @@ mod tests {
             None,
             None,
             1,
+            None,
+            None,
             None,
         )
         .expect("custom true_false");
@@ -387,6 +412,8 @@ mod tests {
             None,
             1,
             None,
+            None,
+            None,
         )
         .expect("mc with images");
 
@@ -410,6 +437,8 @@ mod tests {
             None,
             1,
             Some(true),
+            None,
+            None,
         )
         .expect("questionnaire mc");
 
@@ -421,11 +450,136 @@ mod tests {
     }
 
     #[test]
+    fn multiple_choice_builds_with_multi_select_correct_indices() {
+        let doc = build_question_document(
+            "Pick all that apply",
+            QuestionType::MultipleChoice,
+            Some(vec![json!("A"), json!("B"), json!("C")]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+            None,
+            Some(true),
+            Some(vec![0, 2]),
+        )
+        .expect("multi-select mc");
+
+        assert_eq!(
+            doc.get("allowMultipleSelections").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            doc.get("correctIndices").and_then(|v| v.as_array()).map(|a| a.len()),
+            Some(2)
+        );
+        assert!(doc.get("correctIndex").is_none());
+    }
+
+    #[test]
     fn legacy_string_options_still_work() {
         let parsed = normalize_options(Some(vec![json!("Option A"), json!("Option B")])).unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].label, "Option A");
     }
+}
+
+fn apply_multiple_choice_config(
+    data: &mut Map<String, Value>,
+    accept_any_answer: Option<bool>,
+    allow_multiple_selections: Option<bool>,
+    correct_index: Option<i64>,
+    correct_indices: Option<Vec<i64>>,
+    options_len: usize,
+) -> Result<(), ApiError> {
+    if allow_multiple_selections == Some(true) {
+        data.insert("allowMultipleSelections".into(), json!(true));
+        data.remove("correctIndex");
+        if accept_any_answer == Some(true) {
+            data.insert("acceptAnyAnswer".into(), json!(true));
+            data.remove("correctIndices");
+            return Ok(());
+        }
+        data.remove("acceptAnyAnswer");
+        let indices = require_correct_indices(correct_indices, options_len)?;
+        data.insert("correctIndices".into(), json!(indices));
+        return Ok(());
+    }
+
+    data.remove("allowMultipleSelections");
+    data.remove("correctIndices");
+    apply_choice_grading(data, accept_any_answer, correct_index, options_len)
+}
+
+fn apply_multiple_choice_config_to_merged(
+    merged: &mut Map<String, Value>,
+    accept_any_answer: Option<bool>,
+    allow_multiple_selections: Option<bool>,
+    correct_index: Option<i64>,
+    correct_indices: Option<Vec<i64>>,
+    options_len: usize,
+) -> Result<(), ApiError> {
+    if allow_multiple_selections == Some(true) {
+        merged.insert("allowMultipleSelections".into(), json!(true));
+        merged.remove("correctIndex");
+        if accept_any_answer == Some(true) {
+            merged.insert("acceptAnyAnswer".into(), json!(true));
+            merged.remove("correctIndices");
+            return Ok(());
+        }
+        merged.remove("acceptAnyAnswer");
+        if let Some(indices) = correct_indices {
+            let validated = require_correct_indices(Some(indices), options_len)?;
+            merged.insert("correctIndices".into(), json!(validated));
+        } else if accept_any_answer == Some(false)
+            && merged.get("correctIndices").is_none()
+        {
+            return Err(ApiError::bad_request(
+                "correctIndices is required when multi-select scoring is enabled.",
+            ));
+        }
+        return Ok(());
+    }
+
+    if allow_multiple_selections == Some(false) {
+        merged.remove("allowMultipleSelections");
+        merged.remove("correctIndices");
+    }
+
+    apply_choice_grading_to_merged(merged, accept_any_answer, correct_index, options_len)
+}
+
+fn require_correct_indices(
+    correct_indices: Option<Vec<i64>>,
+    options_len: usize,
+) -> Result<Vec<i64>, ApiError> {
+    let Some(indices) = correct_indices else {
+        return Err(ApiError::bad_request(
+            "correctIndices is required when multi-select scoring is enabled.",
+        ));
+    };
+    if indices.is_empty() {
+        return Err(ApiError::bad_request(
+            "correctIndices must include at least one option index.",
+        ));
+    }
+
+    let mut normalized: Vec<i64> = indices
+        .into_iter()
+        .filter(|idx| *idx >= 0 && (*idx as usize) < options_len)
+        .collect();
+    normalized.sort_unstable();
+    normalized.dedup();
+
+    if normalized.is_empty() {
+        return Err(ApiError::bad_request(
+            "correctIndices must be valid option indexes.",
+        ));
+    }
+
+    Ok(normalized)
 }
 
 fn apply_choice_grading(

@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
-const ADMIN_ONLY_FIELDS: &[&str] = &["correctIndex", "correctAnswer", "correctRating"];
+const ADMIN_ONLY_FIELDS: &[&str] = &["correctIndex", "correctAnswer", "correctRating", "correctIndices"];
 
 fn to_public(mut doc: Map<String, Value>) -> Map<String, Value> {
     for key in ADMIN_ONLY_FIELDS {
@@ -91,6 +91,10 @@ pub struct QuestionBody {
     pub correct_rating: Option<i64>,
     #[serde(rename = "acceptAnyAnswer")]
     pub accept_any_answer: Option<bool>,
+    #[serde(rename = "allowMultipleSelections")]
+    pub allow_multiple_selections: Option<bool>,
+    #[serde(rename = "correctIndices")]
+    pub correct_indices: Option<Vec<i64>>,
     pub order: Option<i64>,
 }
 
@@ -122,6 +126,8 @@ pub async fn create_question(
         body.correct_rating,
         order,
         body.accept_any_answer,
+        body.allow_multiple_selections,
+        body.correct_indices,
     )?;
 
     let question = QuestionModel::create(&state, &ctx.paths, data).await?;
@@ -155,6 +161,8 @@ pub async fn update_question(
         body.correct_rating,
         body.order,
         body.accept_any_answer,
+        body.allow_multiple_selections,
+        body.correct_indices,
     )?;
 
     let updated = QuestionModel::update(&state, &ctx.paths, &path.id, merged).await?;
@@ -241,6 +249,8 @@ pub async fn upload_question_option_image(
         None,
         None,
         Some(options),
+        None,
+        None,
         None,
         None,
         None,
