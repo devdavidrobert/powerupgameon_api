@@ -5,7 +5,9 @@ use crate::features::inventory::domain::{merge_inventory_slot_fields, InventoryS
 use crate::features::locations::domain::GeoStatus;
 use crate::models::prize::PrizeModel;
 use crate::features::campaigns::infrastructure::CampaignRepository;
-use crate::features::questions::domain::scoring::{compute_quiz_score, qualifies_for_spin};
+use crate::features::questions::domain::scoring::{
+    compute_quiz_score, normalize_answers_for_firestore, qualifies_for_spin,
+};
 use crate::models::question::QuestionModel;
 use crate::models::registration::RegistrationModel;
 use crate::utils::firestore::{
@@ -441,6 +443,7 @@ impl SubmissionModel {
         let parent = paths.parent_str(&state.db.client)?;
         let db = state.db.client.clone();
         let session_id = input.session_id.clone();
+        let stored_answers = normalize_answers_for_firestore(&questions, &input.answers);
         let payload = json!({
             "sessionId": input.session_id,
             "fullName": input.full_name.to_uppercase(),
@@ -451,7 +454,7 @@ impl SubmissionModel {
             "percentage": percentage,
             "spinPassPercent": spin_pass_percent,
             "prize": prize,
-            "answers": input.answers,
+            "answers": stored_answers,
             "userAgent": input.user_agent,
             "ip": input.ip,
             "locationId": input.location_id,

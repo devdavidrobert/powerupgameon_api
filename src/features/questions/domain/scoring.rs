@@ -1,5 +1,5 @@
 use super::question_type::QuestionType;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 /// Questions with a configured correct answer count toward the spin pass score.
 pub fn question_is_gradable(question: &Map<String, Value>) -> bool {
@@ -322,6 +322,43 @@ fn answer_as_string(value: &Value) -> Option<String> {
     }
 }
 
+/// Firestore rejects nested arrays (e.g. `answers: [0, [0, 1]]`). Wrap multi-select values in an object.
+pub fn normalize_answers_for_firestore(
+    questions: &[Map<String, Value>],
+    answers: &[Value],
+) -> Vec<Value> {
+    questions
+        .iter()
+        .zip(answers.iter())
+        .map(|(question, answer)| normalize_answer_for_firestore(question, answer))
+        .collect()
+}
+
+pub fn normalize_answer_for_firestore(question: &Map<String, Value>, answer: &Value) -> Value {
+    if question_allows_multiple_selections(question) {
+        if let Some(indices) = answer_as_index_array(answer) {
+            return json!({ "selected": indices });
+        }
+    }
+    answer.clone()
+}
+
+/// Expands stored Firestore answer values back to submission/scoring shape.
+pub fn denormalize_answer_from_firestore(question: &Map<String, Value>, answer: &Value) -> Value {
+    if question_allows_multiple_selections(question) {
+        if let Some(obj) = answer.as_object() {
+            if let Some(selected) = obj.get("selected").and_then(|v| v.as_array()) {
+                let indices: Vec<Value> = selected
+                    .iter()
+                    .filter_map(|v| v.as_i64().map(|n| json!(n)))
+                    .collect();
+                return Value::Array(indices);
+            }
+        }
+    }
+    answer.clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +504,57 @@ mod tests {
         assert!(qualifies_for_spin(80, 80));
         assert!(!qualifies_for_spin(79, 80));
         assert!(qualifies_for_spin(100, 0));
+    }
+
+    #[test]
+    fn swap_recharge_payload_scores_without_error() {
+        let questions: Vec<Map<String, Value>> = vec![
+            json!({
+                "type": "input",
+                "inputRules": { "maxLength": 10, "minLength": 10, "valueMode": "number" }
+            }),
+            json!({ "type": "true_false", "acceptAnyAnswer": true, "options": [{"label":"Yes"},{"label":"No"}] }),
+            json!({ "type": "true_false", "acceptAnyAnswer": true, "options": [{"label":"Yes"},{"label":"No"}] }),
+            json!({
+                "type": "multiple_choice",
+                "acceptAnyAnswer": true,
+                "allowMultipleSelections": true,
+                "options": [{"label":"Recharge"},{"label":"Power"},{"label":"Original"}]
+            }),
+            json!({ "type": "rating", "rating": { "min": 1, "max": 10 } }),
+            json!({ "type": "true_false", "acceptAnyAnswer": true, "options": [{"label":"Yes"},{"label":"No"}] }),
+        ]
+        .into_iter()
+        .map(|q| q.as_object().unwrap().clone())
+        .collect();
+
+        let answers = vec![
+            json!("0708999688"),
+            json!(0),
+            json!(0),
+            json!([0, 1]),
+            json!(10),
+            json!(0),
+        ];
+
+        let result = compute_quiz_score(&questions, &answers).expect("score");
+        assert_eq!(result.question_count, 6);
+        assert_eq!(result.percentage, 100);
+    }
+
+    #[test]
+    fn firestore_normalization_wraps_multi_select_arrays() {
+        let q = json!({
+            "type": "multiple_choice",
+            "allowMultipleSelections": true,
+            "options": ["A", "B", "C"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize_answer_for_firestore(&q, &json!([0, 1]));
+        assert_eq!(normalized, json!({ "selected": [0, 1] }));
+        assert!(normalized.as_array().is_none());
     }
 
     #[test]
