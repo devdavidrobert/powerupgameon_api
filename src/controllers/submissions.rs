@@ -19,6 +19,12 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
+
+#[derive(Deserialize)]
+pub struct UpdateSubmissionPrizeGivenBody {
+    #[serde(rename = "prizeGiven")]
+    pub prize_given: Option<bool>,
+}
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -266,6 +272,25 @@ fn submission_success_response(
     ))
 }
 
+pub async fn update_submission_prize_given(
+    State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
+    Path(path): Path<SlugIdPath>,
+    Json(body): Json<UpdateSubmissionPrizeGivenBody>,
+) -> ApiResult<Json<SuccessResponse<Value>>> {
+    let Some(prize_given) = body.prize_given else {
+        return Err(ApiError::bad_request("prizeGiven must be a boolean."));
+    };
+    if SubmissionModel::find_by_id(&state, &ctx.paths, &path.id)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::bad_request("Submission not found."));
+    }
+    SubmissionModel::update_prize_given(&state, &ctx.paths, &path.id, prize_given).await?;
+    Ok(SuccessResponse::message("Prize fulfillment status updated."))
+}
+
 pub async fn delete_submission(
     State(state): State<Arc<AppState>>,
     ctx: CampaignContext,
@@ -279,7 +304,7 @@ pub async fn delete_submission(
     }
     SubmissionModel::delete(&state, &ctx.paths, &path.id).await?;
     Ok(SuccessResponse::message(
-        "Submission and linked registration records deleted.",
+        "All player records deleted.",
     ))
 }
 

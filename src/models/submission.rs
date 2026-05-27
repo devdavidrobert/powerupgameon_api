@@ -1,17 +1,18 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::infrastructure::CampaignPaths;
-use crate::features::inventory::domain::{merge_inventory_slot_fields, InventorySlot};
+use crate::features::player_session::PlayerSessionCleanupService;
 use crate::features::locations::domain::GeoStatus;
-use crate::models::prize::PrizeModel;
 use crate::features::campaigns::infrastructure::CampaignRepository;
 use crate::features::questions::domain::scoring::{
     compute_quiz_score, normalize_answers_for_firestore, qualifies_for_spin,
 };
 use crate::models::question::QuestionModel;
-use crate::models::registration::RegistrationModel;
 use crate::utils::firestore::{
     build_page_cursor, document_id_from_map, millis_from_value, millis_now, start_after_cursor,
+};
+use crate::features::inventory::domain::{
+    submission_inventory_location_key, submission_matches_inventory_location,
 };
 use crate::utils::firestore_tx::tx_get_optional;
 use anyhow::anyhow;
@@ -26,10 +27,8 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
-const INVENTORY_SUBCOL: &str = "inventory";
 const SUBMISSIONS_SUBCOL: &str = "submissions";
 const SESSIONS_SUBCOL: &str = "sessions";
-const REGISTRATIONS_SUBCOL: &str = "registrations";
 
 pub struct SubmissionModel;
 
@@ -89,9 +88,7 @@ impl SubmissionModel {
         loop {
             let (page, next, has_more) = Self::find_page(state, paths, 200, cursor).await?;
             for row in &page {
-                let Some(location_id) = row.get("locationId").and_then(|v| v.as_str()) else {
-                    continue;
-                };
+                let location_id = submission_inventory_location_key(row);
                 let prize = row.get("prize").and_then(|v| v.as_str()).unwrap_or("");
                 if prize == "pending" || prize == "Nothing" || prize.is_empty() {
                     continue;
@@ -109,9 +106,7 @@ impl SubmissionModel {
                     continue;
                 };
 
-                *counts
-                    .entry((location_id.to_string(), prize_id))
-                    .or_insert(0) += 1;
+                *counts.entry((location_id, prize_id)).or_insert(0) += 1;
             }
             if !has_more {
                 break;
@@ -488,39 +483,30 @@ impl SubmissionModel {
         Ok(result)
     }
 
-    pub async fn delete(state: &AppState, paths: &CampaignPaths, id: &str) -> ApiResult<()> {
-        let prizes = PrizeModel::find_all(state, paths).await?;
-        let sub = Self::find_by_id(state, paths, id).await?;
-        let reg = RegistrationModel::find_by_id(state, paths, id).await?;
-
-        let decrement = sub
-            .as_ref()
-            .and_then(|sub| resolve_inventory_decrement(sub, &prizes));
-        let delete_registration = reg.is_some();
-        let normalized_name = reg
-            .as_ref()
-            .and_then(|r| r.get("normalizedName").and_then(|v| v.as_str()))
-            .map(String::from);
-
-        let db = state.db.client.clone();
+    pub async fn update_prize_given(
+        state: &AppState,
+        paths: &CampaignPaths,
+        id: &str,
+        prize_given: bool,
+    ) -> ApiResult<()> {
         let parent = paths.parent_str(&state.db.client)?;
-        let id = id.to_string();
-
-        db.run_transaction(move |db, transaction| {
-            delete_submission_tx(
-                db,
-                transaction,
-                parent.clone(),
-                id.clone(),
-                delete_registration,
-                normalized_name.clone(),
-                decrement.clone(),
-            )
-        })
-        .await
-        .map_err(|e| ApiError::Internal(e.into()))?;
-
+        state
+            .db
+            .client
+            .fluent()
+            .update()
+            .in_col(SUBMISSIONS_SUBCOL)
+            .document_id(id)
+            .parent(parent)
+            .object(&json!({ "prizeGiven": prize_given }))
+            .execute::<Map<String, Value>>()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
         Ok(())
+    }
+
+    pub async fn delete(state: &AppState, paths: &CampaignPaths, id: &str) -> ApiResult<()> {
+        PlayerSessionCleanupService::delete_all(state, paths, id).await
     }
 }
 
@@ -530,7 +516,7 @@ fn submission_row_matches_prize_win(
     prize_id: &str,
     prize_name: &str,
 ) -> bool {
-    if row.get("locationId").and_then(|v| v.as_str()) != Some(location_id) {
+    if !submission_matches_inventory_location(row, location_id) {
         return false;
     }
     let prize = row.get("prize").and_then(|v| v.as_str()).unwrap_or("");
@@ -541,97 +527,6 @@ fn submission_row_matches_prize_win(
         return true;
     }
     prize == prize_name
-}
-
-fn resolve_inventory_decrement(
-    sub: &Map<String, Value>,
-    prizes: &[Map<String, Value>],
-) -> Option<(String, String)> {
-    let prize_name = sub.get("prize").and_then(|v| v.as_str())?;
-    let location_id = sub.get("locationId").and_then(|v| v.as_str())?;
-    if prize_name == "pending" || prize_name == "Nothing" {
-        return None;
-    }
-    let prize = prizes.iter().find(|p| {
-        p.get("name").and_then(|n| n.as_str()) == Some(prize_name)
-            && p.get("isRealPrize")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true)
-    })?;
-    let prize_id = prize.get("id").and_then(|v| v.as_str())?;
-    Some((location_id.to_string(), prize_id.to_string()))
-}
-
-fn delete_submission_tx<'b>(
-    db: firestore::FirestoreDb,
-    transaction: &'b mut firestore::FirestoreTransaction,
-    parent: String,
-    id: String,
-    delete_registration: bool,
-    normalized_name: Option<String>,
-    decrement: Option<(String, String)>,
-) -> Pin<Box<dyn Future<Output = Result<(), BackoffError<FirestoreError>>> + Send + 'b>> {
-    Box::pin(async move {
-        if let Some((location_id, prize_id)) = &decrement {
-            let slot_id = InventorySlot::slot_key(location_id, prize_id);
-            let slot_doc =
-                tx_get_optional(&db, parent.as_str(), INVENTORY_SUBCOL, &slot_id).await?;
-
-            if let Some(slot_doc) = slot_doc {
-                let awarded = slot_doc
-                    .get("awardedCount")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                if awarded > 0 {
-                    let now = millis_now();
-                    let payload = merge_inventory_slot_fields(&slot_doc, awarded - 1, now);
-                    db.fluent()
-                        .update()
-                        .in_col(INVENTORY_SUBCOL)
-                        .document_id(&slot_id)
-                        .parent(parent.as_str())
-                        .object(&payload)
-                        .add_to_transaction(transaction)
-                        .map_err(BackoffError::Permanent)?;
-                }
-            }
-        }
-
-        delete_doc_tx(&db, transaction, &parent, SUBMISSIONS_SUBCOL, &id)?;
-        delete_doc_tx(&db, transaction, &parent, SESSIONS_SUBCOL, &id)?;
-
-        if delete_registration {
-            delete_doc_tx(&db, transaction, &parent, REGISTRATIONS_SUBCOL, &id)?;
-            if let Some(normalized) = normalized_name {
-                delete_doc_tx(
-                    &db,
-                    transaction,
-                    &parent,
-                    REGISTRATIONS_SUBCOL,
-                    &format!("name_{normalized}"),
-                )?;
-            }
-        }
-
-        Ok(())
-    })
-}
-
-fn delete_doc_tx(
-    db: &firestore::FirestoreDb,
-    transaction: &mut firestore::FirestoreTransaction,
-    parent: &str,
-    collection: &str,
-    id: &str,
-) -> Result<(), BackoffError<FirestoreError>> {
-    db.fluent()
-        .delete()
-        .from(collection)
-        .parent(parent)
-        .document_id(id)
-        .add_to_transaction(transaction)
-        .map_err(BackoffError::Permanent)?;
-    Ok(())
 }
 
 fn create_tx<'b>(

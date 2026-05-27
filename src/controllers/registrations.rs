@@ -282,7 +282,7 @@ pub async fn delete_registration(
     }
     RegistrationModel::delete(&state, &ctx.paths, &path.id).await?;
     Ok(SuccessResponse::message(
-        "Registration deleted. Player can now replay.",
+        "Registration deleted. All player records removed.",
     ))
 }
 

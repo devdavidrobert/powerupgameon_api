@@ -3,7 +3,10 @@ use crate::error::{ApiError, ApiResult};
 use crate::features::campaigns::domain::Campaign;
 use crate::features::campaigns::infrastructure::CampaignPaths;
 use crate::features::inventory::application::InventoryService;
-use crate::features::inventory::domain::{merge_inventory_slot_fields, InventorySlot, InventoryView};
+use crate::features::inventory::domain::{
+    merge_inventory_slot_fields, InventorySlot, InventoryView, CAMPAIGN_WIDE_LOCATION_ID,
+    CAMPAIGN_WIDE_LOCATION_NAME,
+};
 use crate::features::locations::infrastructure::LocationRepository;
 use crate::models::prize::PrizeModel;
 use crate::models::submission::FinalizeSpinResult;
@@ -75,9 +78,10 @@ impl InventoryRepository {
         location_id: &str,
         prize_id: &str,
     ) -> ApiResult<Option<InventorySlot>> {
-        if location_id.trim().is_empty() || prize_id.trim().is_empty() {
+        if prize_id.trim().is_empty() {
             return Ok(None);
         }
+        let location_id = crate::features::inventory::domain::normalize_inventory_location_id(location_id);
 
         let id = InventorySlot::slot_key(location_id, prize_id);
         let parent = paths.parent_str(&state.db.client)?;
@@ -111,6 +115,8 @@ impl InventoryRepository {
         if total_quantity < 0 {
             return Err(ApiError::bad_request("totalQuantity must be non-negative."));
         }
+        let location_id =
+            crate::features::inventory::domain::normalize_inventory_location_id(location_id);
 
         let id = InventorySlot::slot_key(location_id, prize_id);
         let parent = paths.parent_str(&state.db.client)?;
@@ -171,9 +177,11 @@ impl InventoryRepository {
         location_id: &str,
         prize_id: &str,
     ) -> ApiResult<()> {
-        if location_id.trim().is_empty() || prize_id.trim().is_empty() {
-            return Err(ApiError::bad_request("locationId and prizeId are required."));
+        if prize_id.trim().is_empty() {
+            return Err(ApiError::bad_request("prizeId is required."));
         }
+        let location_id =
+            crate::features::inventory::domain::normalize_inventory_location_id(location_id);
 
         let existing = Self::find_slot(state, paths, location_id, prize_id).await?;
         if existing.is_none() {
@@ -248,10 +256,14 @@ impl InventoryRepository {
                 let remaining = slot.remaining(releasable);
                 InventoryView {
                     location_id: slot.location_id.clone(),
-                    location_name: loc_names
-                        .get(&slot.location_id)
-                        .cloned()
-                        .unwrap_or_else(|| slot.location_id.clone()),
+                    location_name: if slot.location_id == CAMPAIGN_WIDE_LOCATION_ID {
+                        CAMPAIGN_WIDE_LOCATION_NAME.to_string()
+                    } else {
+                        loc_names
+                            .get(&slot.location_id)
+                            .cloned()
+                            .unwrap_or_else(|| slot.location_id.clone())
+                    },
                     prize_id: slot.prize_id.clone(),
                     prize_name: prize_names
                         .get(&slot.prize_id)
@@ -514,8 +526,14 @@ fn claim_tx<'b>(
             .add_to_transaction(transaction)
             .map_err(BackoffError::Permanent)?;
 
-        let submission_update =
-            merge_submission_spin_fields(&sub, &prize_id, &prize_name, is_real_prize, now);
+        let submission_update = merge_submission_spin_fields(
+            &sub,
+            &location_id,
+            &prize_id,
+            &prize_name,
+            is_real_prize,
+            now,
+        );
         db.fluent()
             .update()
             .in_col(SUBMISSIONS_SUBCOL)
@@ -548,6 +566,7 @@ fn claim_tx<'b>(
 /// so quiz scores, names, and `submittedAt` survive spin finalization (admin list depends on them).
 fn merge_submission_spin_fields(
     existing: &Map<String, Value>,
+    location_id: &str,
     prize_id: &str,
     prize_name: &str,
     is_real_prize: bool,
@@ -563,6 +582,9 @@ fn merge_submission_spin_fields(
     merged.insert("isRealPrize".into(), json!(is_real_prize));
     merged.insert("status".into(), json!("completed"));
     merged.insert("finalizedAt".into(), json!(finalized_at));
+    if !location_id.is_empty() {
+        merged.insert("locationId".into(), json!(location_id));
+    }
     merged
 }
 
@@ -640,10 +662,15 @@ mod tests {
         ]);
         let merged = merge_submission_spin_fields(
             &existing,
+            CAMPAIGN_WIDE_LOCATION_ID,
             "prize-uuid",
             "Sticker Pack",
             false,
             1_700_000_000_000_i64,
+        );
+        assert_eq!(
+            merged.get("locationId").and_then(|v| v.as_str()),
+            Some(CAMPAIGN_WIDE_LOCATION_ID)
         );
         assert_eq!(
             merged.get("prize").and_then(|v| v.as_str()),

@@ -3,6 +3,7 @@ pub mod branding;
 pub mod inventory;
 pub mod locations;
 pub mod media;
+pub mod player_session;
 pub mod questions;
 pub mod spin;
 pub mod uniqueness;

@@ -274,7 +274,7 @@ mod tests {
         let body: QuestionBody = serde_json::from_value(json!({
             "text": "Rate us",
             "type": "rating",
-            "rating": { "min": 1, "max": 5 },
+            "rating": { "min": 1, "max": 5, "minLabel": "Low", "maxLabel": "High" },
             "correctRating": 5,
             "order": 1
         }))
@@ -283,12 +283,17 @@ mod tests {
         assert_eq!(body.text.as_deref(), Some("Rate us"));
         assert_eq!(body.question_type.as_deref(), Some("rating"));
         assert_eq!(body.correct_rating, Some(5));
+        let rating = body.rating.expect("rating");
+        assert_eq!(rating.get("minLabel").and_then(|v| v.as_str()), Some("Low"));
+        assert_eq!(rating.get("maxLabel").and_then(|v| v.as_str()), Some("High"));
     }
 
     #[test]
-    fn to_public_strips_all_admin_fields() {
+    fn to_public_strips_all_admin_fields_but_keeps_rating_labels() {
         let public = to_public(json!({
             "text": "Q",
+            "type": "rating",
+            "rating": { "min": 1, "max": 5, "minLabel": "Poor", "maxLabel": "Great" },
             "correctIndex": 0,
             "correctAnswer": "secret",
             "correctRating": 5
@@ -300,5 +305,14 @@ mod tests {
         assert!(public.get("correctIndex").is_none());
         assert!(public.get("correctAnswer").is_none());
         assert!(public.get("correctRating").is_none());
+        let rating = public.get("rating").expect("rating");
+        assert_eq!(
+            rating.get("minLabel").and_then(|v| v.as_str()),
+            Some("Poor")
+        );
+        assert_eq!(
+            rating.get("maxLabel").and_then(|v| v.as_str()),
+            Some("Great")
+        );
     }
 }

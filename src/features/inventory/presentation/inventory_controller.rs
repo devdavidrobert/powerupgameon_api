@@ -2,7 +2,10 @@ use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::CampaignContext;
 use crate::features::inventory::application::InventoryService;
-use crate::features::inventory::domain::InventoryView;
+use crate::features::inventory::domain::{
+    is_campaign_wide_location, normalize_inventory_location_id, InventoryView,
+    CAMPAIGN_WIDE_LOCATION_NAME,
+};
 use crate::features::inventory::infrastructure::{inventory_view_to_json, InventoryRepository};
 use crate::features::locations::infrastructure::LocationRepository;
 use crate::features::spin::domain::is_consolation_prize;
@@ -14,8 +17,8 @@ use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct UpsertInventoryBody {
-    #[serde(rename = "locationId")]
-    pub location_id: String,
+    #[serde(rename = "locationId", default)]
+    pub location_id: Option<String>,
     #[serde(rename = "prizeId")]
     pub prize_id: String,
     #[serde(rename = "totalQuantity")]
@@ -24,10 +27,28 @@ pub struct UpsertInventoryBody {
 
 #[derive(Deserialize)]
 pub struct DeleteInventoryBody {
-    #[serde(rename = "locationId")]
-    pub location_id: String,
+    #[serde(rename = "locationId", default)]
+    pub location_id: Option<String>,
     #[serde(rename = "prizeId")]
     pub prize_id: String,
+}
+
+fn resolve_location_scope(raw: Option<&str>) -> String {
+    normalize_inventory_location_id(raw.unwrap_or("")).to_string()
+}
+
+async fn location_display_name(
+    state: &AppState,
+    paths: &crate::features::campaigns::infrastructure::CampaignPaths,
+    location_id: &str,
+) -> ApiResult<String> {
+    if is_campaign_wide_location(location_id) {
+        return Ok(CAMPAIGN_WIDE_LOCATION_NAME.to_string());
+    }
+    let location = LocationRepository::find_by_id(state, paths, location_id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("Location not found."))?;
+    Ok(location.name)
 }
 
 pub async fn list_inventory(
@@ -45,16 +66,13 @@ pub async fn upsert_inventory(
     ctx: CampaignContext,
     Json(body): Json<UpsertInventoryBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if body.location_id.trim().is_empty() {
-        return Err(ApiError::bad_request("locationId is required."));
-    }
     if body.prize_id.trim().is_empty() {
         return Err(ApiError::bad_request("prizeId is required."));
     }
 
-    let location = LocationRepository::find_by_id(&state, &ctx.paths, body.location_id.trim())
-        .await?
-        .ok_or_else(|| ApiError::bad_request("Location not found."))?;
+    let location_id = resolve_location_scope(body.location_id.as_deref());
+    let location_name = location_display_name(&state, &ctx.paths, &location_id).await?;
+
     let prize = PrizeModel::find_by_id(&state, &ctx.paths, body.prize_id.trim())
         .await?
         .ok_or_else(|| ApiError::bad_request("Prize not found."))?;
@@ -69,7 +87,7 @@ pub async fn upsert_inventory(
     let slot = InventoryRepository::upsert_slot(
         &state,
         &ctx.paths,
-        body.location_id.trim(),
+        &location_id,
         body.prize_id.trim(),
         &prize_name,
         body.total_quantity,
@@ -81,7 +99,7 @@ pub async fn upsert_inventory(
     let releasable = InventoryService::releasable_now(&ctx.campaign, &slot, now);
     let view = InventoryView {
         location_id: slot.location_id.clone(),
-        location_name: location.name,
+        location_name,
         prize_id: slot.prize_id.clone(),
         prize_name,
         total_quantity: slot.total_quantity,
@@ -98,16 +116,12 @@ pub async fn delete_inventory(
     ctx: CampaignContext,
     Json(body): Json<DeleteInventoryBody>,
 ) -> ApiResult<Json<SuccessResponse<Value>>> {
-    if body.location_id.trim().is_empty() {
-        return Err(ApiError::bad_request("locationId is required."));
-    }
     if body.prize_id.trim().is_empty() {
         return Err(ApiError::bad_request("prizeId is required."));
     }
 
-    let _ = LocationRepository::find_by_id(&state, &ctx.paths, body.location_id.trim())
-        .await?
-        .ok_or_else(|| ApiError::bad_request("Location not found."))?;
+    let location_id = resolve_location_scope(body.location_id.as_deref());
+    let _ = location_display_name(&state, &ctx.paths, &location_id).await?;
     let _ = PrizeModel::find_by_id(&state, &ctx.paths, body.prize_id.trim())
         .await?
         .ok_or_else(|| ApiError::bad_request("Prize not found."))?;
@@ -115,7 +129,7 @@ pub async fn delete_inventory(
     InventoryRepository::delete_slot(
         &state,
         &ctx.paths,
-        body.location_id.trim(),
+        &location_id,
         body.prize_id.trim(),
     )
     .await?;

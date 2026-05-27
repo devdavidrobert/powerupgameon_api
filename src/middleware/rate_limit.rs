@@ -32,6 +32,57 @@ fn full_rate_limit_key(config: &Config, rule: &RateLimitRule, key: &str) -> Stri
     }
 }
 
+const CAMPAIGN_PLAYER_RATE_LIMIT_PREFIXES: &[&str] = &["rl_reg", "rl_sub", "rl_spin"];
+
+/// Full Redis / in-memory keys for campaign-scoped registration, submission, and spin IP limits.
+pub fn campaign_player_rate_limit_keys(
+    config: &Config,
+    campaign_id: &str,
+    ip: &str,
+) -> Vec<String> {
+    let scope_key = campaign_ip_rate_limit_key(campaign_id, ip);
+    CAMPAIGN_PLAYER_RATE_LIMIT_PREFIXES
+        .iter()
+        .map(|prefix| {
+            let rule = RateLimitRule {
+                prefix,
+                window: Duration::from_secs(1),
+                max: 1,
+            };
+            full_rate_limit_key(config, &rule, &scope_key)
+        })
+        .collect()
+}
+
+/// Clears campaign IP rate-limit counters so an admin delete allows the player to replay.
+pub async fn clear_campaign_player_rate_limits(
+    config: &Config,
+    redis: &Option<redis::aio::ConnectionManager>,
+    campaign_id: &str,
+    ip: &str,
+) {
+    let keys = campaign_player_rate_limit_keys(config, campaign_id, ip);
+    clear_memory_rate_limit_keys(&keys);
+
+    if let Some(redis) = redis {
+        let mut conn = redis.clone();
+        if let Err(err) = conn.del::<_, ()>(keys).await {
+            tracing::warn!(
+                %err,
+                campaign_id,
+                ip,
+                "failed to clear Redis rate limit keys during player delete"
+            );
+        }
+    }
+}
+
+fn clear_memory_rate_limit_keys(keys: &[String]) {
+    for key in keys {
+        MEMORY_STORE.remove(key);
+    }
+}
+
 pub fn is_global_rate_limit_exempt(path: &str) -> bool {
     path == "/health" || path == "/api/csrf-token"
 }

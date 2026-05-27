@@ -1,6 +1,51 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+/// Firestore `locationId` for prize inventory not tied to a geo location.
+pub const CAMPAIGN_WIDE_LOCATION_ID: &str = "__campaign__";
+pub const CAMPAIGN_WIDE_LOCATION_NAME: &str = "Campaign-wide";
+
+pub fn is_campaign_wide_location(location_id: &str) -> bool {
+    location_id.trim() == CAMPAIGN_WIDE_LOCATION_ID
+}
+
+/// Normalizes admin input: missing, blank, or sentinel → campaign-wide scope.
+pub fn normalize_inventory_location_id(location_id: &str) -> &str {
+    let trimmed = location_id.trim();
+    if trimmed.is_empty() || is_campaign_wide_location(trimmed) {
+        CAMPAIGN_WIDE_LOCATION_ID
+    } else {
+        trimmed
+    }
+}
+
+/// Location key used when reconciling inventory against submissions.
+pub fn submission_inventory_location_key(row: &Map<String, Value>) -> String {
+    row.get("locationId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| CAMPAIGN_WIDE_LOCATION_ID.to_string())
+}
+
+pub fn submission_matches_inventory_location(
+    row: &Map<String, Value>,
+    inventory_location_id: &str,
+) -> bool {
+    let sub_location = row
+        .get("locationId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if is_campaign_wide_location(inventory_location_id) {
+        sub_location.is_none() || sub_location == Some(CAMPAIGN_WIDE_LOCATION_ID)
+    } else {
+        sub_location == Some(inventory_location_id)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InventorySlot {
     pub id: String,
@@ -18,6 +63,26 @@ pub struct InventorySlot {
 
 /// Firestore `.update().object()` replaces the whole document in our client — merge fields
 /// so `locationId`, `prizeId`, and `totalQuantity` survive awarded-count updates.
+/// Returns `(location_id, prize_id)` when a submission consumed real-prize inventory.
+pub fn resolve_inventory_decrement(
+    sub: &Map<String, Value>,
+    prizes: &[Map<String, Value>],
+) -> Option<(String, String)> {
+    let prize_name = sub.get("prize").and_then(|v| v.as_str())?;
+    let location_id = submission_inventory_location_key(sub);
+    if prize_name == "pending" || prize_name == "Nothing" {
+        return None;
+    }
+    let prize = prizes.iter().find(|p| {
+        p.get("name").and_then(|n| n.as_str()) == Some(prize_name)
+            && p.get("isRealPrize")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+    })?;
+    let prize_id = prize.get("id").and_then(|v| v.as_str())?;
+    Some((location_id, prize_id.to_string()))
+}
+
 pub fn merge_inventory_slot_fields(
     existing: &Map<String, Value>,
     awarded_count: i64,
@@ -63,6 +128,31 @@ pub struct InventoryView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_inventory_location_id_maps_blank_to_campaign_wide() {
+        assert_eq!(normalize_inventory_location_id(""), CAMPAIGN_WIDE_LOCATION_ID);
+        assert_eq!(
+            normalize_inventory_location_id(CAMPAIGN_WIDE_LOCATION_ID),
+            CAMPAIGN_WIDE_LOCATION_ID
+        );
+        assert_eq!(normalize_inventory_location_id("venue-1"), "venue-1");
+    }
+
+    #[test]
+    fn submission_matches_campaign_wide_inventory() {
+        let no_location = Map::from_iter([("locationId".into(), json!(null))]);
+        assert!(submission_matches_inventory_location(
+            &no_location,
+            CAMPAIGN_WIDE_LOCATION_ID
+        ));
+
+        let venue = Map::from_iter([("locationId".into(), json!("venue-1"))]);
+        assert!(!submission_matches_inventory_location(
+            &venue,
+            CAMPAIGN_WIDE_LOCATION_ID
+        ));
+    }
 
     #[test]
     fn merge_inventory_slot_fields_preserves_metadata() {

@@ -3,6 +3,53 @@ use crate::error::ApiError;
 use serde_json::{json, Map, Value};
 
 const TRUE_FALSE_DEFAULT: [&str; 2] = ["True", "False"];
+const MAX_RATING_LABEL_LEN: usize = 48;
+
+/// Normalizes rating scale bounds and optional endpoint labels for storage and public API.
+pub fn normalize_rating_config(rating: Value) -> Result<Value, ApiError> {
+    let obj = rating.as_object().ok_or_else(|| {
+        ApiError::bad_request("rating config must be an object.")
+    })?;
+    let min = obj.get("min").and_then(|v| v.as_i64()).unwrap_or(1);
+    let max = obj.get("max").and_then(|v| v.as_i64()).unwrap_or(5);
+    if min >= max {
+        return Err(ApiError::bad_request("rating min must be less than max."));
+    }
+
+    let mut out = Map::new();
+    out.insert("min".into(), json!(min));
+    out.insert("max".into(), json!(max));
+
+    if let Some(min_label) = parse_rating_label(obj.get("minLabel"), "minLabel")? {
+        out.insert("minLabel".into(), json!(min_label));
+    }
+    if let Some(max_label) = parse_rating_label(obj.get("maxLabel"), "maxLabel")? {
+        out.insert("maxLabel".into(), json!(max_label));
+    }
+
+    Ok(Value::Object(out))
+}
+
+fn parse_rating_label(value: Option<&Value>, field: &str) -> Result<Option<String>, ApiError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(s) = value.as_str() else {
+        return Err(ApiError::bad_request(format!(
+            "rating {field} must be a string."
+        )));
+    };
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() > MAX_RATING_LABEL_LEN {
+        return Err(ApiError::bad_request(format!(
+            "rating {field} must be at most {MAX_RATING_LABEL_LEN} characters."
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
+}
 
 #[derive(Clone)]
 struct ParsedOption {
@@ -135,18 +182,10 @@ pub fn build_question_document(
             let rating_obj = rating.ok_or_else(|| {
                 ApiError::bad_request("rating config is required for rating questions.")
             })?;
-            let min = rating_obj
-                .get("min")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(1);
-            let max = rating_obj
-                .get("max")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(5);
-            if min >= max {
-                return Err(ApiError::bad_request("rating min must be less than max."));
-            }
-            data.insert("rating".into(), rating_obj);
+            let normalized = normalize_rating_config(rating_obj)?;
+            let min = normalized.get("min").and_then(|v| v.as_i64()).unwrap_or(1);
+            let max = normalized.get("max").and_then(|v| v.as_i64()).unwrap_or(5);
+            data.insert("rating".into(), normalized);
             if let Some(correct) = correct_rating {
                 if correct < min || correct > max {
                     return Err(ApiError::bad_request(
@@ -266,7 +305,7 @@ pub fn merge_question_updates(
         }
         QuestionType::Rating => {
             if let Some(rating) = rating {
-                merged.insert("rating".into(), rating);
+                merged.insert("rating".into(), normalize_rating_config(rating)?);
             }
             match correct_rating {
                 Some(value) => {
@@ -483,6 +522,56 @@ mod tests {
         let parsed = normalize_options(Some(vec![json!("Option A"), json!("Option B")])).unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].label, "Option A");
+    }
+
+    #[test]
+    fn rating_builds_with_endpoint_labels() {
+        let doc = build_question_document(
+            "How was it?",
+            QuestionType::Rating,
+            None,
+            None,
+            None,
+            None,
+            Some(json!({
+                "min": 1,
+                "max": 10,
+                "minLabel": "  Poor  ",
+                "maxLabel": "Excellent"
+            })),
+            None,
+            1,
+            None,
+            None,
+            None,
+        )
+        .expect("rating with labels");
+
+        let rating = doc.get("rating").expect("rating object");
+        assert_eq!(rating.get("min").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(rating.get("max").and_then(|v| v.as_i64()), Some(10));
+        assert_eq!(
+            rating.get("minLabel").and_then(|v| v.as_str()),
+            Some("Poor")
+        );
+        assert_eq!(
+            rating.get("maxLabel").and_then(|v| v.as_str()),
+            Some("Excellent")
+        );
+    }
+
+    #[test]
+    fn rating_omits_blank_endpoint_labels() {
+        let normalized = normalize_rating_config(json!({
+            "min": 1,
+            "max": 5,
+            "minLabel": "   ",
+            "maxLabel": ""
+        }))
+        .expect("normalize");
+
+        assert!(normalized.get("minLabel").is_none());
+        assert!(normalized.get("maxLabel").is_none());
     }
 }
 

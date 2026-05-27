@@ -7,6 +7,7 @@ use crate::features::locations::domain::{
     GeoPoint, GeoStatus, GeoValidationResult, IpGeoCrossCheck, IpGeoLookup,
 };
 use crate::features::locations::infrastructure::{IpApiProvider, LocationRepository};
+use crate::features::player_session::PlayerSessionCleanupService;
 use crate::features::uniqueness::application::UniquenessService;
 use crate::features::uniqueness::infrastructure::UniquenessRepository;
 use crate::utils::firestore::{build_page_cursor, millis_now, start_after_cursor};
@@ -258,53 +259,7 @@ impl RegistrationModel {
     }
 
     pub async fn delete(state: &AppState, paths: &CampaignPaths, id: &str) -> ApiResult<()> {
-        let reg = Self::find_by_id(state, paths, id).await?;
-        let Some(reg) = reg else {
-            return Ok(());
-        };
-
-        let parent = paths.parent_str(&state.db.client)?;
-        let writer = state
-            .db
-            .batch_writer()
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-        let mut batch = writer.new_batch();
-
-        db_delete(
-            &state.db.client,
-            &mut batch,
-            parent.as_str(),
-            REGISTRATIONS_SUBCOL,
-            id,
-        )?;
-        if let Some(normalized) = reg.get("normalizedName").and_then(|v| v.as_str()) {
-            db_delete(
-                &state.db.client,
-                &mut batch,
-                parent.as_str(),
-                REGISTRATIONS_SUBCOL,
-                &format!("name_{normalized}"),
-            )?;
-        }
-
-        // Release the device lock (if present on this registration) so the person
-        // can re-enter after an admin correction (mirrors name_lock cleanup).
-        if let Some(device_id) = reg.get("deviceId").and_then(|v| v.as_str()) {
-            // Best-effort; do not fail the whole delete if the lock row is already gone.
-            let _ = UniquenessRepository::delete_device_lock_in_batch(
-                &state.db.client,
-                &mut batch,
-                parent.as_str(),
-                device_id,
-            );
-        }
-
-        batch
-            .write()
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-        Ok(())
+        PlayerSessionCleanupService::delete_all(state, paths, id).await
     }
 }
 
@@ -468,23 +423,6 @@ fn tx_err(code: &str) -> BackoffError<FirestoreError> {
             "code".to_string(),
         )),
     ))
-}
-
-fn db_delete(
-    db: &firestore::FirestoreDb,
-    batch: &mut firestore::FirestoreBatch<'_, firestore::FirestoreSimpleBatchWriter>,
-    parent: &str,
-    collection: &str,
-    id: &str,
-) -> ApiResult<()> {
-    db.fluent()
-        .delete()
-        .from(collection)
-        .parent(parent)
-        .document_id(id)
-        .add_to_batch(batch)
-        .map_err(|e| ApiError::Internal(e.into()))?;
-    Ok(())
 }
 
 fn map_registration_error(err: FirestoreError) -> ApiError {

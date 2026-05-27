@@ -149,7 +149,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             .route("/", get(submissions::get_all_submissions))
             .route(
                 "/{id}",
-                get(submissions::get_submission).delete(submissions::delete_submission),
+                get(submissions::get_submission)
+                    .patch(submissions::update_submission_prize_given)
+                    .delete(submissions::delete_submission),
             ),
     ));
 

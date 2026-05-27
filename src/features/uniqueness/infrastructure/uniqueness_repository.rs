@@ -126,6 +126,25 @@ impl UniquenessRepository {
         Ok(())
     }
 
+    /// Adds a device lock delete to an existing Firestore transaction.
+    pub fn delete_device_lock_tx(
+        db: &firestore::FirestoreDb,
+        transaction: &mut firestore::FirestoreTransaction,
+        parent: &str,
+        device_id: &str,
+    ) -> Result<(), BackoffError<FirestoreError>> {
+        let lock_id =
+            crate::features::uniqueness::application::UniquenessService::device_lock_id(device_id);
+        db.fluent()
+            .delete()
+            .from(UNIQUENESS_SUBCOL)
+            .parent(parent)
+            .document_id(&lock_id)
+            .add_to_transaction(transaction)
+            .map_err(BackoffError::Permanent)?;
+        Ok(())
+    }
+
     /// Adds a device lock delete to an existing batch (used inside the
     /// registration delete batch together with name_lock and player docs).
     pub fn delete_device_lock_in_batch(
