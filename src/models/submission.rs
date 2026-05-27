@@ -59,22 +59,11 @@ impl SubmissionModel {
         prize_id: &str,
         prize_name: &str,
     ) -> ApiResult<i64> {
-        let mut total = 0i64;
-        let mut cursor = None;
-        loop {
-            let (page, next, has_more) =
-                Self::find_page(state, paths, 200, cursor).await?;
-            for row in &page {
-                if submission_row_matches_prize_win(row, location_id, prize_id, prize_name) {
-                    total += 1;
-                }
-            }
-            if !has_more {
-                break;
-            }
-            cursor = next;
-        }
-        Ok(total)
+        let rows = Self::find_all_unordered(state, paths).await?;
+        Ok(rows
+            .iter()
+            .filter(|row| submission_row_matches_prize_win(row, location_id, prize_id, prize_name))
+            .count() as i64)
     }
 
     /// Counts completed real-prize wins grouped by `(locationId, prizeId)` for inventory reconciliation.
@@ -84,36 +73,48 @@ impl SubmissionModel {
         prize_name_to_id: &HashMap<String, String>,
     ) -> ApiResult<HashMap<(String, String), i64>> {
         let mut counts: HashMap<(String, String), i64> = HashMap::new();
-        let mut cursor = None;
-        loop {
-            let (page, next, has_more) = Self::find_page(state, paths, 200, cursor).await?;
-            for row in &page {
-                let location_id = submission_inventory_location_key(row);
-                let prize = row.get("prize").and_then(|v| v.as_str()).unwrap_or("");
-                if prize == "pending" || prize == "Nothing" || prize.is_empty() {
-                    continue;
-                }
-                if row.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false) {
-                    continue;
-                }
-
-                let prize_id = row
-                    .get("prizeId")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-                    .or_else(|| prize_name_to_id.get(prize).cloned());
-                let Some(prize_id) = prize_id else {
-                    continue;
-                };
-
-                *counts.entry((location_id, prize_id)).or_insert(0) += 1;
+        let rows = Self::find_all_unordered(state, paths).await?;
+        for row in &rows {
+            let location_id = submission_inventory_location_key(row);
+            let prize = row.get("prize").and_then(|v| v.as_str()).unwrap_or("");
+            if prize == "pending" || prize == "Nothing" || prize.is_empty() {
+                continue;
             }
-            if !has_more {
-                break;
+            if row.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false) {
+                continue;
             }
-            cursor = next;
+
+            let prize_id = row
+                .get("prizeId")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .or_else(|| prize_name_to_id.get(prize).cloned());
+            let Some(prize_id) = prize_id else {
+                continue;
+            };
+
+            *counts.entry((location_id, prize_id)).or_insert(0) += 1;
         }
         Ok(counts)
+    }
+
+    /// Full submission scan without composite indexes (inventory reconciliation, legacy fallback).
+    async fn find_all_unordered(
+        state: &AppState,
+        paths: &CampaignPaths,
+    ) -> ApiResult<Vec<Map<String, Value>>> {
+        let parent = paths.parent_str(&state.db.client)?;
+        state
+            .db
+            .client
+            .fluent()
+            .select()
+            .from(SUBMISSIONS_SUBCOL)
+            .parent(parent.as_str())
+            .obj()
+            .query()
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))
     }
 
     pub async fn find_by_id(
@@ -211,40 +212,53 @@ impl SubmissionModel {
     ) -> ApiResult<(Vec<Map<String, Value>>, Option<Map<String, Value>>, bool)> {
         let parent = paths.parent_str(&state.db.client)?;
         let cap = limit.clamp(1, 200);
-        let query_limit = (cap + 1) as u32;
 
-        let mut query = state
-            .db
-            .client
-            .fluent()
-            .select()
-            .from(SUBMISSIONS_SUBCOL)
-            .parent(parent.as_str())
-            .order_by([("__name__", FirestoreQueryDirection::Descending)]);
-
-        if let Some(ref cursor_map) = cursor {
-            query = query.start_at(start_after_cursor(cursor_map, "submittedAt")?);
-        }
-
-        let mut items: Vec<Map<String, Value>> = query
-            .limit(query_limit)
-            .obj()
-            .query()
-            .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
-
+        let mut items = Self::find_all_unordered(state, paths).await?;
         items.sort_by(|a, b| list_sort_timestamp(b).cmp(&list_sort_timestamp(a)));
 
-        let has_more = items.len() > cap;
+        let start = if let Some(cursor_map) = cursor {
+            let cursor_ts = cursor_map
+                .get("submittedAt")
+                .and_then(millis_from_value)
+                .unwrap_or(0);
+            let cursor_id = cursor_map
+                .get("name")
+                .and_then(|v| v.as_str())
+                .and_then(|name| name.rsplit('/').next())
+                .map(String::from);
+            items
+                .iter()
+                .position(|row| {
+                    let ts = list_sort_timestamp(row);
+                    if ts < cursor_ts {
+                        return true;
+                    }
+                    if ts == cursor_ts {
+                        if let (Some(cursor_id), Some(row_id)) =
+                            (cursor_id.as_deref(), document_id_from_map(row))
+                        {
+                            return row_id.as_str() < cursor_id;
+                        }
+                    }
+                    false
+                })
+                .unwrap_or(items.len())
+        } else {
+            0
+        };
+
+        let mut page: Vec<Map<String, Value>> = items.into_iter().skip(start).take(cap + 1).collect();
+        let has_more = page.len() > cap;
         if has_more {
-            items.truncate(cap);
+            page.truncate(cap);
         }
         let next_cursor = if has_more {
-            items.last().and_then(|row| list_page_cursor(row, parent.as_str()))
+            page.last()
+                .and_then(|row| list_page_cursor(row, parent.as_str()))
         } else {
             None
         };
-        Ok((items, next_cursor, has_more))
+        Ok((page, next_cursor, has_more))
     }
 
     /// Backfill `submittedAt` on legacy spin-wiped rows so they appear in the indexed list query.
