@@ -1,5 +1,7 @@
 use crate::app_state::AppState;
 use crate::error::{ApiError, ApiResult, SuccessResponse};
+use crate::features::admin_events::application::AdminLiveEventPublisher;
+use crate::features::admin_events::domain::AdminLiveChange;
 use crate::features::campaigns::presentation::PublicCampaignContext;
 use crate::features::inventory::domain::{InventorySlot, CAMPAIGN_WIDE_LOCATION_ID};
 use crate::features::inventory::infrastructure::InventoryRepository;
@@ -312,6 +314,13 @@ pub async fn spin_wheel(
         .await
         {
             Ok(response) => {
+                AdminLiveEventPublisher::submission_changed(
+                    &state,
+                    &ctx,
+                    &session_id,
+                    AdminLiveChange::Modified,
+                )
+                .await;
                 log_spin_slow(&state, &req_ctx, started);
                 return Ok(response);
             }
@@ -367,6 +376,15 @@ pub async fn spin_wheel(
             None,
         )
         .await;
+        if result.is_ok() {
+            AdminLiveEventPublisher::submission_changed(
+                &state,
+                &ctx,
+                &session_id,
+                AdminLiveChange::Modified,
+            )
+            .await;
+        }
         log_spin_slow(&state, &req_ctx, started);
         return result;
     }

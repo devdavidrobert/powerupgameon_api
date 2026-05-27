@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::controllers::{auth, prizes, questions, raffles, registrations, submissions};
 use crate::error::{json_error, SuccessResponse};
+use crate::features::admin_events::presentation::stream_admin_events;
 use crate::features::branding::presentation::upload_brand_logo;
 use crate::features::campaigns::presentation::{
     archive_campaign, clear_campaign_timers, create_campaign, get_campaign, get_campaign_settings,
@@ -216,7 +217,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/settings", api_settings)
         .nest("/locations", api_locations)
         .nest("/inventory", api_inventory)
-        .nest("/raffles", api_raffles);
+        .nest("/raffles", api_raffles)
+        .merge(with_admin(
+            state.clone(),
+            Router::new().route("/admin/events", get(stream_admin_events)),
+        ));
 
     let api_campaign_admin = with_admin(
         state.clone(),

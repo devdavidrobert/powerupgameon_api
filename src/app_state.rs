@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::services::firebase_auth::FirebaseAuth;
 use crate::services::firestore::FirestoreService;
+use crate::features::admin_events::infrastructure::AdminEventBus;
 use redis::aio::ConnectionManager;
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ pub struct AppState {
     pub db: Arc<FirestoreService>,
     pub firebase_auth: FirebaseAuth,
     pub redis: Option<ConnectionManager>,
+    pub admin_events: AdminEventBus,
 }
 
 impl AppState {
@@ -42,10 +44,11 @@ impl AppState {
         };
 
         Ok(Arc::new(Self {
-            config,
+            config: config.clone(),
             db,
             firebase_auth,
             redis,
+            admin_events: AdminEventBus::new(config.redis_url.clone()),
         }))
     }
 }

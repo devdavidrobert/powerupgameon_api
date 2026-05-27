@@ -5,6 +5,7 @@ use crate::features::campaigns::presentation::{
 };
 use crate::features::locations::domain::GeoStatus;
 use crate::features::locations::infrastructure::LocationRepository;
+use crate::features::admin_events::application::AdminLiveEventPublisher;
 use crate::logger;
 use crate::middleware::request_context::RequestContext;
 use crate::models::registration::{GeoResolveOutput, RegistrationInput, RegistrationModel};
@@ -167,6 +168,9 @@ pub async fn register(
         .or_else(|| headers.get("user-agent").and_then(|v| v.to_str().ok()))
         .unwrap_or("unknown")
         .to_string();
+    let ip_for_event = ip.clone();
+    let user_agent_for_event = user_agent.clone();
+    let normalized_for_event = normalized.clone();
 
     let device_id = body.device_id.clone().filter(|s| !s.trim().is_empty());
     let device_fingerprint = body.device_fingerprint.clone();
@@ -239,6 +243,20 @@ pub async fn register(
         }),
     );
 
+    AdminLiveEventPublisher::registration_added(
+        &state,
+        ctx.campaign_id(),
+        &session_id,
+        &full_name,
+        &normalized_for_event,
+        &ip_for_event,
+        &user_agent_for_event,
+        geo_status,
+        location_id.clone(),
+        ip_geo_status.clone(),
+    )
+    .await;
+
     if started.elapsed().as_secs() > 8 {
         logger::log(
             &state.config,
@@ -282,6 +300,8 @@ pub async fn delete_registration(
         return Err(ApiError::bad_request("Registration not found."));
     }
     RegistrationModel::delete(&state, &ctx.paths, &path.id).await?;
+    AdminLiveEventPublisher::registration_removed(&state, ctx.campaign_id(), &path.id).await;
+    AdminLiveEventPublisher::submission_removed(&state, ctx.campaign_id(), &path.id).await;
     Ok(SuccessResponse::message(
         "Registration deleted. All player records removed.",
     ))

@@ -6,6 +6,8 @@ use crate::features::campaigns::presentation::{
 use crate::features::locations::domain::GeoStatus;
 use crate::features::locations::infrastructure::LocationRepository;
 use crate::features::spin::domain::{is_consolation_prize, prize_id_from_map};
+use crate::features::admin_events::application::AdminLiveEventPublisher;
+use crate::features::admin_events::domain::AdminLiveChange;
 use crate::middleware::request_context::RequestContext;
 use crate::models::prize::PrizeModel;
 use crate::models::registration::RegistrationModel;
@@ -213,6 +215,14 @@ pub async fn create_submission(
     .await
     .map_err(|e| map_create_error(e, &req_ctx))?;
 
+    AdminLiveEventPublisher::submission_changed(
+        &state,
+        &ctx,
+        session_id,
+        AdminLiveChange::Added,
+    )
+    .await;
+
     submission_success_response(
         &state.config,
         &ctx,
@@ -288,6 +298,13 @@ pub async fn update_submission_prize_given(
         return Err(ApiError::bad_request("Submission not found."));
     }
     SubmissionModel::update_prize_given(&state, &ctx.paths, &path.id, prize_given).await?;
+    AdminLiveEventPublisher::submission_changed(
+        &state,
+        &ctx,
+        &path.id,
+        AdminLiveChange::Modified,
+    )
+    .await;
     Ok(SuccessResponse::message("Prize fulfillment status updated."))
 }
 
@@ -303,6 +320,8 @@ pub async fn delete_submission(
         return Err(ApiError::bad_request("Submission not found."));
     }
     SubmissionModel::delete(&state, &ctx.paths, &path.id).await?;
+    AdminLiveEventPublisher::submission_removed(&state, ctx.campaign_id(), &path.id).await;
+    AdminLiveEventPublisher::registration_removed(&state, ctx.campaign_id(), &path.id).await;
     Ok(SuccessResponse::message(
         "All player records deleted.",
     ))

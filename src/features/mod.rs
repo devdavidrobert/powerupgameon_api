@@ -1,3 +1,4 @@
+pub mod admin_events;
 pub mod campaigns;
 pub mod branding;
 pub mod inventory;
