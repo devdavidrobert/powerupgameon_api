@@ -78,8 +78,9 @@ pub async fn get_all_registrations(
                 .get("id")
                 .or_else(|| reg.get("sessionId"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .map(String::from)
+                .or_else(|| crate::utils::firestore::document_id_from_map(&reg))
+                .unwrap_or_default();
             let mut out = serialize_doc_data(&reg);
             out.insert("id".into(), json!(id.clone()));
             out.insert(

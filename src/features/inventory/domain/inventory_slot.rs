@@ -69,10 +69,24 @@ pub fn resolve_inventory_decrement(
     prizes: &[Map<String, Value>],
 ) -> Option<(String, String)> {
     let prize_name = sub.get("prize").and_then(|v| v.as_str())?;
-    let location_id = submission_inventory_location_key(sub);
-    if prize_name == "pending" || prize_name == "Nothing" {
+    if prize_name == "pending" || prize_name == "Nothing" || prize_name.is_empty() {
         return None;
     }
+    if sub.get("isRealPrize").and_then(|v| v.as_bool()) == Some(false) {
+        return None;
+    }
+
+    let location_id = submission_inventory_location_key(sub);
+
+    // Prefer prizeId written at spin finalization — same source as aggregate_real_prize_wins.
+    if let Some(prize_id) = sub
+        .get("prizeId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        return Some((location_id, prize_id.to_string()));
+    }
+
     let prize = prizes.iter().find(|p| {
         p.get("name").and_then(|n| n.as_str()) == Some(prize_name)
             && p.get("isRealPrize")

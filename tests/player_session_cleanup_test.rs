@@ -98,6 +98,25 @@ async fn clear_campaign_player_rate_limits_resets_in_memory_counters() {
 }
 
 #[test]
+fn resolve_inventory_decrement_prefers_prize_id_on_submission() {
+    let prizes = vec![];
+
+    let sub: Map<_, _> = json!({
+        "prize": "T-Shirt",
+        "prizeId": "p1",
+        "locationId": "loc-a"
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    assert_eq!(
+        resolve_inventory_decrement(&sub, &prizes),
+        Some(("loc-a".into(), "p1".into()))
+    );
+}
+
+#[test]
 fn resolve_inventory_decrement_ignores_consolation_prizes() {
     let prizes = vec![json!({
         "id": "p2",
@@ -110,4 +129,14 @@ fn resolve_inventory_decrement_ignores_consolation_prizes() {
 
     let sub: Map<_, _> = json!({ "prize": "Sticker" }).as_object().unwrap().clone();
     assert!(resolve_inventory_decrement(&sub, &prizes).is_none());
+
+    let sub_with_id: Map<_, _> = json!({
+        "prize": "Sticker",
+        "prizeId": "p2",
+        "isRealPrize": false
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    assert!(resolve_inventory_decrement(&sub_with_id, &prizes).is_none());
 }

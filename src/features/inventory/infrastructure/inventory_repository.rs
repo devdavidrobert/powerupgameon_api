@@ -241,11 +241,10 @@ impl InventoryRepository {
 
         for slot in &mut slots {
             let key = (slot.location_id.clone(), slot.prize_id.clone());
-            if let Some(from_submissions) = wins_by_slot.get(&key) {
-                if *from_submissions > slot.awarded_count {
-                    Self::sync_awarded_count(state, paths, slot, *from_submissions, now).await?;
-                    slot.awarded_count = *from_submissions;
-                }
+            let from_submissions = wins_by_slot.get(&key).copied().unwrap_or(0);
+            if from_submissions != slot.awarded_count {
+                Self::sync_awarded_count(state, paths, slot, from_submissions, now).await?;
+                slot.awarded_count = from_submissions;
             }
         }
 
