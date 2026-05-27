@@ -50,6 +50,7 @@ mod tests {
             spin_pass_percent: 100,
             brand_logos: None,
             player_outcome_copy: None,
+            registration_form_header: None,
             created_at: None,
             updated_at: None,
         }

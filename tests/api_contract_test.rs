@@ -44,6 +44,7 @@ fn campaign_context(status: CampaignStatus) -> CampaignContext {
             spin_pass_percent: 100,
             brand_logos: None,
             player_outcome_copy: None,
+            registration_form_header: None,
             created_at: None,
             updated_at: Some(1_700_000_000_001_i64),
         },

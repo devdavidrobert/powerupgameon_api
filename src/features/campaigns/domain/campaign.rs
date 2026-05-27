@@ -117,6 +117,8 @@ pub struct Campaign {
     pub brand_logos: Option<Vec<BrandLogo>>,
     #[serde(rename = "playerOutcomeCopy", skip_serializing_if = "Option::is_none")]
     pub player_outcome_copy: Option<PlayerOutcomeCopy>,
+    #[serde(rename = "registrationFormHeader", skip_serializing_if = "Option::is_none")]
+    pub registration_form_header: Option<String>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
@@ -141,6 +143,17 @@ impl Campaign {
     pub fn player_outcome_copy_or_default(&self) -> PlayerOutcomeCopy {
         self.player_outcome_copy.clone().unwrap_or_default()
     }
+
+    pub fn registration_form_header_or_default(&self) -> String {
+        self.registration_form_header
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| DEFAULT_REGISTRATION_FORM_HEADER.to_string())
+    }
 }
 
 pub const MAX_BRAND_LOGOS: usize = 2;
+pub const DEFAULT_REGISTRATION_FORM_HEADER: &str = "Rider Details";
+pub const MAX_REGISTRATION_FORM_HEADER_LEN: usize = 120;

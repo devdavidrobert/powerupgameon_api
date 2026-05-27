@@ -2,12 +2,97 @@ use super::question_type::QuestionType;
 use crate::error::ApiError;
 use serde_json::{json, Map, Value};
 
-const TRUE_FALSE_OPTIONS: [&str; 2] = ["True", "False"];
+const TRUE_FALSE_DEFAULT: [&str; 2] = ["True", "False"];
+
+#[derive(Clone)]
+struct ParsedOption {
+    label: String,
+    image_url: Option<String>,
+}
+
+fn parse_option(value: &Value) -> Result<ParsedOption, ApiError> {
+    match value {
+        Value::String(s) => {
+            let label = s.trim().to_string();
+            if label.is_empty() {
+                return Err(ApiError::bad_request("option label cannot be empty."));
+            }
+            Ok(ParsedOption {
+                label,
+                image_url: None,
+            })
+        }
+        Value::Object(obj) => {
+            let label = obj
+                .get("label")
+                .or_else(|| obj.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if label.is_empty() {
+                return Err(ApiError::bad_request("option label cannot be empty."));
+            }
+            let image_url = obj
+                .get("imageUrl")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            Ok(ParsedOption { label, image_url })
+        }
+        _ => Err(ApiError::bad_request("invalid option format.")),
+    }
+}
+
+fn options_to_json(options: &[ParsedOption]) -> Vec<Value> {
+    options
+        .iter()
+        .map(|o| {
+            let mut m = Map::new();
+            m.insert("label".into(), json!(o.label));
+            if let Some(url) = &o.image_url {
+                m.insert("imageUrl".into(), json!(url));
+            }
+            Value::Object(m)
+        })
+        .collect()
+}
+
+fn default_true_false_options() -> Vec<ParsedOption> {
+    TRUE_FALSE_DEFAULT
+        .iter()
+        .map(|s| ParsedOption {
+            label: s.to_string(),
+            image_url: None,
+        })
+        .collect()
+}
+
+fn normalize_options(options: Option<Vec<Value>>) -> Result<Vec<ParsedOption>, ApiError> {
+    let options = options.unwrap_or_default();
+    options.iter().map(parse_option).collect()
+}
+
+fn resolve_true_false_options(options: Option<Vec<Value>>) -> Result<Vec<ParsedOption>, ApiError> {
+    match options {
+        Some(vals) if !vals.is_empty() => {
+            let parsed = normalize_options(Some(vals))?;
+            if parsed.len() != 2 {
+                return Err(ApiError::bad_request(
+                    "true/false questions need exactly 2 options.",
+                ));
+            }
+            Ok(parsed)
+        }
+        _ => Ok(default_true_false_options()),
+    }
+}
 
 pub fn build_question_document(
     text: &str,
     question_type: QuestionType,
-    options: Option<Vec<String>>,
+    options: Option<Vec<Value>>,
     correct_index: Option<i64>,
     input_rules: Option<Value>,
     correct_answer: Option<String>,
@@ -29,13 +114,13 @@ pub fn build_question_document(
                 ));
             }
             let correct_index = require_correct_index(correct_index, options.len())?;
-            data.insert("options".into(), json!(options));
+            data.insert("options".into(), json!(options_to_json(&options)));
             data.insert("correctIndex".into(), json!(correct_index));
         }
         QuestionType::TrueFalse => {
-            let options: Vec<String> = TRUE_FALSE_OPTIONS.iter().map(|s| s.to_string()).collect();
+            let options = resolve_true_false_options(options)?;
             let correct_index = require_correct_index(correct_index, options.len())?;
-            data.insert("options".into(), json!(options));
+            data.insert("options".into(), json!(options_to_json(&options)));
             data.insert("correctIndex".into(), json!(correct_index));
         }
         QuestionType::Rating => {
@@ -88,7 +173,7 @@ pub fn merge_question_updates(
     existing: &Map<String, Value>,
     text: Option<String>,
     question_type: Option<QuestionType>,
-    options: Option<Vec<String>>,
+    options: Option<Vec<Value>>,
     correct_index: Option<i64>,
     input_rules: Option<Value>,
     correct_answer: Option<String>,
@@ -120,7 +205,7 @@ pub fn merge_question_updates(
                         "multiple choice questions need at least 2 options.",
                     ));
                 }
-                merged.insert("options".into(), json!(options));
+                merged.insert("options".into(), json!(options_to_json(&options)));
             }
             if let Some(correct_index) = correct_index {
                 let len = merged
@@ -134,10 +219,10 @@ pub fn merge_question_updates(
             strip_type_specific_fields(&mut merged, resolved_type);
         }
         QuestionType::TrueFalse => {
-            merged.insert(
-                "options".into(),
-                json!(TRUE_FALSE_OPTIONS.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
-            );
+            if let Some(opts) = options {
+                let parsed = resolve_true_false_options(Some(opts))?;
+                merged.insert("options".into(), json!(options_to_json(&parsed)));
+            }
             if let Some(correct_index) = correct_index {
                 let idx = require_correct_index(Some(correct_index), 2)?;
                 merged.insert("correctIndex".into(), json!(idx));
@@ -203,16 +288,6 @@ fn strip_type_specific_fields(doc: &mut Map<String, Value>, question_type: Quest
     }
 }
 
-fn normalize_options(options: Option<Vec<String>>) -> Result<Vec<String>, ApiError> {
-    let options = options.unwrap_or_default();
-    let trimmed: Vec<String> = options
-        .into_iter()
-        .map(|o| o.trim().to_string())
-        .filter(|o| !o.is_empty())
-        .collect();
-    Ok(trimmed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +330,58 @@ mod tests {
         let options = doc.get("options").and_then(|v| v.as_array()).unwrap();
         assert_eq!(options.len(), 2);
         assert_eq!(doc.get("correctIndex").and_then(|v| v.as_i64()), Some(0));
+    }
+
+    #[test]
+    fn true_false_accepts_custom_labels() {
+        let doc = build_question_document(
+            "Do you agree?",
+            QuestionType::TrueFalse,
+            Some(vec![json!({"label": "Yes"}), json!({"label": "No"})]),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            1,
+        )
+        .expect("custom true_false");
+
+        let options = doc.get("options").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(options[0].get("label").and_then(|v| v.as_str()), Some("Yes"));
+        assert_eq!(options[1].get("label").and_then(|v| v.as_str()), Some("No"));
+    }
+
+    #[test]
+    fn multiple_choice_accepts_option_images() {
+        let doc = build_question_document(
+            "Pick a drink",
+            QuestionType::MultipleChoice,
+            Some(vec![
+                json!({"label": "Steam", "imageUrl": "https://cdn.example/steam.png"}),
+                json!({"label": "Other"}),
+            ]),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            1,
+        )
+        .expect("mc with images");
+
+        let options = doc.get("options").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(
+            options[0].get("imageUrl").and_then(|v| v.as_str()),
+            Some("https://cdn.example/steam.png")
+        );
+    }
+
+    #[test]
+    fn legacy_string_options_still_work() {
+        let parsed = normalize_options(Some(vec![json!("Option A"), json!("Option B")])).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].label, "Option A");
     }
 }
 

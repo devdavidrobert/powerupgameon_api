@@ -3,18 +3,21 @@ use crate::error::{ApiError, ApiResult, SuccessResponse};
 use crate::features::campaigns::presentation::{
     CampaignContext, PublicCampaignContext, SlugIdPath,
 };
+use crate::features::media::application::read_uploaded_image;
+use crate::features::media::domain::extension_for_content_type;
+use crate::features::media::infrastructure::upload_public_image;
 use crate::features::questions::domain::question_type::QuestionType;
 use crate::features::questions::domain::validation::{
     build_question_document, merge_question_updates,
 };
 use crate::models::question::QuestionModel;
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     http::{header, HeaderMap},
     Json,
 };
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
 const ADMIN_ONLY_FIELDS: &[&str] = &["correctIndex", "correctAnswer", "correctRating"];
@@ -76,7 +79,7 @@ pub struct QuestionBody {
     pub text: Option<String>,
     #[serde(rename = "type")]
     pub question_type: Option<String>,
-    pub options: Option<Vec<String>>,
+    pub options: Option<Vec<Value>>,
     #[serde(rename = "correctIndex")]
     pub correct_index: Option<i64>,
     #[serde(rename = "inputRules")]
@@ -167,6 +170,83 @@ pub async fn delete_question(
     }
     QuestionModel::delete(&state, &ctx.paths, &path.id).await?;
     Ok(SuccessResponse::message("Question deleted."))
+}
+
+#[derive(serde::Deserialize)]
+pub struct QuestionOptionImagePath {
+    pub slug: String,
+    pub id: String,
+    pub option_index: String,
+}
+
+pub async fn upload_question_option_image(
+    State(state): State<Arc<AppState>>,
+    ctx: CampaignContext,
+    Path(path): Path<QuestionOptionImagePath>,
+    mut multipart: Multipart,
+) -> ApiResult<Json<SuccessResponse<Map<String, Value>>>> {
+    let existing = QuestionModel::find_by_id(&state, &ctx.paths, &path.id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("Question not found."))?;
+
+    let option_index: usize = path
+        .option_index
+        .parse()
+        .map_err(|_| ApiError::bad_request("option index must be a non-negative integer."))?;
+
+    let options_array = existing
+        .get("options")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| ApiError::bad_request("Question has no options."))?;
+
+    if option_index >= options_array.len() {
+        return Err(ApiError::bad_request("option index out of range."));
+    }
+
+    let uploaded = read_uploaded_image(&mut multipart).await?;
+    let ext = extension_for_content_type(&uploaded.content_type)
+        .ok_or_else(|| ApiError::bad_request("Unsupported image content type."))?;
+    let object_path = format!(
+        "campaigns/{}/questions/{}/options/{}-{}.{}",
+        ctx.slug(),
+        path.id,
+        option_index,
+        uuid::Uuid::new_v4(),
+        ext
+    );
+
+    let url =
+        upload_public_image(&state, object_path, &uploaded.content_type, &uploaded.bytes).await?;
+
+    let mut options: Vec<Value> = options_array.clone();
+    match &mut options[option_index] {
+        Value::Object(obj) => {
+            obj.insert("imageUrl".into(), json!(url));
+        }
+        Value::String(label) => {
+            let label = label.clone();
+            options[option_index] = json!({ "label": label, "imageUrl": url });
+        }
+        _ => {
+            return Err(ApiError::bad_request("invalid option at index."));
+        }
+    }
+
+    let merged = merge_question_updates(
+        &existing,
+        None,
+        None,
+        Some(options),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+
+    let updated = QuestionModel::update(&state, &ctx.paths, &path.id, merged).await?;
+    Ok(SuccessResponse::data(updated))
 }
 
 #[cfg(test)]

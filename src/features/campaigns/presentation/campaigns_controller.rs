@@ -4,8 +4,8 @@ use crate::features::campaigns::application::CampaignService;
 use crate::features::campaigns::domain::{CampaignStatus, GeoEnforcement, StaggerMode};
 use crate::features::campaigns::infrastructure::{
     build_update_payload, campaign_to_json, parse_brand_logos, parse_challenge_time_value,
-    parse_player_outcome_copy, parse_stagger_schedule, validate_challenge_window, validate_slug, CampaignRepository,
-    CampaignUpdateInput,
+    parse_player_outcome_copy, parse_registration_form_header, parse_stagger_schedule,
+    validate_challenge_window, validate_slug, CampaignRepository, CampaignUpdateInput,
 };
 use crate::features::campaigns::presentation::campaign_context::{CampaignContext, SlugPath};
 use crate::features::locations::infrastructure::LocationRepository;
@@ -46,6 +46,8 @@ pub struct UpdateCampaignBody {
     pub brand_logos: Option<Value>,
     #[serde(rename = "playerOutcomeCopy")]
     pub player_outcome_copy: Option<Value>,
+    #[serde(rename = "registrationFormHeader")]
+    pub registration_form_header: Option<String>,
 }
 
 fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) -> ApiResult<()> {
@@ -103,6 +105,16 @@ fn apply_update_body(body: UpdateCampaignBody, input: &mut CampaignUpdateInput) 
         } else {
             input.player_outcome_copy = Some(parse_player_outcome_copy(&copy)?);
             input.clear_player_outcome_copy = false;
+        }
+    }
+    if let Some(header) = body.registration_form_header {
+        let trimmed = header.trim();
+        if trimmed.is_empty() {
+            input.clear_registration_form_header = true;
+            input.registration_form_header = None;
+        } else {
+            input.registration_form_header = Some(parse_registration_form_header(trimmed)?);
+            input.clear_registration_form_header = false;
         }
     }
     Ok(())
@@ -189,6 +201,7 @@ pub async fn get_campaign_settings(
             "spinPassPercent": ctx.campaign.spin_pass_percent(),
             "brandLogos": ctx.campaign.sorted_brand_logos(),
             "playerOutcomeCopy": ctx.campaign.player_outcome_copy_or_default(),
+            "registrationFormHeader": ctx.campaign.registration_form_header_or_default(),
             "hasGeofenceLocations": has_geofence_locations,
             "updatedAt": ctx.campaign.updated_at,
         })),
@@ -211,6 +224,7 @@ pub async fn get_campaign_settings_admin(
         "spinPassPercent": ctx.campaign.spin_pass_percent(),
         "brandLogos": ctx.campaign.sorted_brand_logos(),
         "playerOutcomeCopy": ctx.campaign.player_outcome_copy_or_default(),
+        "registrationFormHeader": ctx.campaign.registration_form_header_or_default(),
         "hasGeofenceLocations": has_geofence_locations,
     })))
 }
@@ -237,6 +251,7 @@ pub async fn update_campaign_settings(
         "spinPassPercent": updated.spin_pass_percent(),
         "brandLogos": updated.sorted_brand_logos(),
         "playerOutcomeCopy": updated.player_outcome_copy_or_default(),
+        "registrationFormHeader": updated.registration_form_header_or_default(),
     })))
 }
 

@@ -92,6 +92,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             .route(
                 "/{id}",
                 put(questions::update_question).delete(questions::delete_question),
+            )
+            .route(
+                "/{id}/options/{option_index}/image/upload",
+                post(questions::upload_question_option_image)
+                    .layer(RequestBodyLimitLayer::new(3 * 1024 * 1024)),
             ),
     ));
 

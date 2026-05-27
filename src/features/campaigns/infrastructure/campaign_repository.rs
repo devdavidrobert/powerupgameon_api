@@ -223,6 +223,12 @@ pub fn map_campaign(doc: Map<String, Value>) -> Option<Campaign> {
         player_outcome_copy: doc
             .get("playerOutcomeCopy")
             .and_then(parse_player_outcome_copy_from_value),
+        registration_form_header: doc
+            .get("registrationFormHeader")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         created_at: doc
             .get("createdAt")
             .and_then(|v| crate::utils::firestore::millis_from_value(v)),
@@ -246,6 +252,7 @@ pub fn campaign_to_json(campaign: &Campaign) -> Value {
         "spinPassPercent": campaign.spin_pass_percent,
         "brandLogos": campaign.sorted_brand_logos(),
         "playerOutcomeCopy": campaign.player_outcome_copy_or_default(),
+        "registrationFormHeader": campaign.registration_form_header_or_default(),
         "createdAt": campaign.created_at,
         "updatedAt": campaign.updated_at,
     })
@@ -346,6 +353,11 @@ pub fn build_update_payload(body: &CampaignUpdateInput) -> ApiResult<Map<String,
             serde_json::to_value(copy).map_err(|e| ApiError::Internal(e.into()))?,
         );
     }
+    if body.clear_registration_form_header {
+        payload.insert("registrationFormHeader".into(), Value::Null);
+    } else if let Some(header) = &body.registration_form_header {
+        payload.insert("registrationFormHeader".into(), json!(header));
+    }
     Ok(payload)
 }
 
@@ -364,6 +376,8 @@ pub struct CampaignUpdateInput {
     pub clear_brand_logos: bool,
     pub player_outcome_copy: Option<PlayerOutcomeCopy>,
     pub clear_player_outcome_copy: bool,
+    pub registration_form_header: Option<String>,
+    pub clear_registration_form_header: bool,
 }
 
 pub fn parse_challenge_time_value(value: &Value) -> ApiResult<Value> {
@@ -484,6 +498,22 @@ pub fn parse_brand_logos(value: &Value) -> ApiResult<Vec<BrandLogo>> {
 
     logos.sort_by_key(|logo| logo.sort_order);
     Ok(logos)
+}
+
+pub fn parse_registration_form_header(value: &str) -> ApiResult<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::bad_request(
+            "registrationFormHeader cannot be empty.",
+        ));
+    }
+    if trimmed.chars().count() > crate::features::campaigns::domain::MAX_REGISTRATION_FORM_HEADER_LEN {
+        return Err(ApiError::bad_request(format!(
+            "registrationFormHeader must be at most {} characters.",
+            crate::features::campaigns::domain::MAX_REGISTRATION_FORM_HEADER_LEN
+        )));
+    }
+    Ok(trimmed.to_string())
 }
 
 pub fn parse_player_outcome_copy_from_value(value: &Value) -> Option<PlayerOutcomeCopy> {
@@ -610,6 +640,19 @@ mod tests {
         .unwrap();
 
         assert!(payload.get("staggerSchedule").and_then(|v| v.as_array()).is_some());
+    }
+
+    #[test]
+    fn parse_registration_form_header_rejects_blank() {
+        assert!(parse_registration_form_header("   ").is_err());
+    }
+
+    #[test]
+    fn parse_registration_form_header_trims_value() {
+        assert_eq!(
+            parse_registration_form_header("  Rider Details  ").unwrap(),
+            "Rider Details"
+        );
     }
 
     #[test]

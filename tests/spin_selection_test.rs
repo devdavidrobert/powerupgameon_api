@@ -31,6 +31,7 @@ fn sample_campaign(start: i64, end: i64) -> Campaign {
         spin_pass_percent: 100,
         brand_logos: None,
         player_outcome_copy: None,
+        registration_form_header: None,
         created_at: None,
         updated_at: None,
     }
